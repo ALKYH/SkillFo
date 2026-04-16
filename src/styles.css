@@ -589,8 +589,7 @@ select,
   padding: 0.3rem 0.5rem;
   border-bottom: 1px solid var(--line-strong);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.3)),
-    var(--tmux-strip-bg);
+    var(--accent);
 }
 
 .tmux-statusbar-bottom {
