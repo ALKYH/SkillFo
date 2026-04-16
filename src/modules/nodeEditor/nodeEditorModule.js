@@ -1,4 +1,5 @@
-﻿import { normalizeLang } from "../../utils/markdownRenderUtils";
+import { normalizeLang } from "../../utils/markdownRenderUtils";
+import nodeEditorConfig from "./nodeEditorConfig.json";
 
 const NODE_W = 196;
 const NODE_H = 72;
@@ -230,206 +231,220 @@ function buildGenericNodeDefaults(color, summary, items) {
   };
 }
 
-const NODE_LIBRARY = {
-  metadata: {
-    chip: "META",
-    title: { zh: "元数据", en: "Metadata" },
-    label: { zh: "元数据", en: "Metadata" },
-    color: "#5bb8ff",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#5bb8ff",
-        "Describe what this skill is for.",
-        [
-          { title: "Skill Name", content: "My Skill" },
-          { title: "Description", content: "Describe what this skill is for." },
-          { title: "When To Use", content: "Use when you need to produce a reusable SKILL.md." },
-          { title: "Bait", content: "A short one-line lure for discovery." }
-        ]
-      )
-  },
-  prereq: {
-    chip: "CHECK",
-    title: { zh: "前置检查", en: "Prerequisite" },
-    label: { zh: "前置检查", en: "Prerequisite" },
-    color: "#ffb66f",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#ffb66f",
-        "Run prerequisite checks before continuing.",
-        [
-          { title: "Checks", content: "node --version\npython --version" },
-          { title: "On Fail", content: "Stop and report missing prerequisites." }
-        ]
-      )
-  },
-  env: {
-    chip: "ENV",
-    title: { zh: "环境配置", en: "Environment" },
-    label: { zh: "环境配置", en: "Environment" },
-    color: "#7fe18f",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#7fe18f",
-        "Prepare runtime paths and environment variables.",
-        [
-          { title: "Paths", content: "workspace: ./\noutput: ./dist" },
-          { title: "Variables", content: "OPENAI_API_KEY=\nCODEX_HOME=" }
-        ]
-      )
-  },
-  workflow: {
-    chip: "FLOW",
-    title: { zh: "核心工作流", en: "Workflow" },
-    label: { zh: "核心工作流", en: "Workflow" },
-    color: "#8ea4ff",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#8ea4ff",
-        "Define the core workflow and key execution pattern.",
-        [
-          { title: "Goal", content: "Define the core skill intent." },
-          { title: "Pattern", content: "1. Gather context\n2. Structure documentation\n3. Review constraints" }
-        ]
-      )
-  },
-  guardrail: {
-    chip: "SAFE",
-    title: { zh: "护栏", en: "Guardrail" },
-    label: { zh: "护栏", en: "Guardrail" },
-    color: "#ff8f95",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#ff8f95",
-        "Define safety rules and defensive constraints.",
-        [{ title: "Rules", content: "- Validate inputs\n- Never delete data by default\n- Report failures clearly" }]
-      )
-  },
-  cli: {
-    chip: "CLI",
-    title: { zh: "CLI 工具", en: "CLI Tool" },
-    label: { zh: "CLI 工具", en: "CLI Tool" },
-    color: "#79b9ff",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#79b9ff",
-        "Run CLI command templates.",
-        [
-          { title: "Command", content: "npm run build" },
-          { title: "Workdir", content: "." }
-        ]
-      )
-  },
-  python: {
-    chip: "PY",
-    title: { zh: "Python 脚本", en: "Python Script" },
-    label: { zh: "Python 脚本", en: "Python Script" },
-    color: "#7ec8ff",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#7ec8ff",
-        "Python script module.",
-        [{ title: "Script", content: "print('hello from python')" }]
-      )
-  },
-  js: {
-    chip: "JS",
-    title: { zh: "JavaScript 脚本", en: "JavaScript Script" },
-    label: { zh: "JavaScript 脚本", en: "JavaScript Script" },
-    color: "#f6de72",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#f6de72",
-        "JavaScript script module.",
-        [{ title: "Script", content: "console.log('hello from js')" }]
-      )
-  },
-  condition: {
-    chip: "IF",
-    title: { zh: "条件", en: "Condition" },
-    label: { zh: "条件", en: "Condition" },
-    color: "#d8b76c",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#d8b76c",
-        "Conditional branch definition.",
-        [
-          { title: "LHS", content: "score" },
-          { title: "Operator", content: ">" },
-          { title: "RHS", content: "6" }
-        ]
-      )
-  },
-  loop: {
-    chip: "LOOP",
-    title: { zh: "循环", en: "Loop" },
-    label: { zh: "循环", en: "Loop" },
-    color: "#f292d2",
-    defaults: () =>
-      buildGenericNodeDefaults(
-        "#f292d2",
-        "Loop module and retry controls.",
-        [
-          { title: "Iterations", content: "3" },
-          { title: "Iterator", content: "item" }
-        ]
-      )
+function normalizeLocalizedText(value, fallback = { zh: "", en: "" }) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const zh = String(value.zh ?? value.cn ?? fallback.zh ?? fallback.en ?? "");
+    const en = String(value.en ?? fallback.en ?? fallback.zh ?? "");
+    return { zh, en };
   }
-};
 
-const PRESETS = [
-  {
+  const text = String(value ?? fallback.en ?? fallback.zh ?? "");
+  return { zh: text, en: text };
+}
+
+function normalizeNodeType(value, fallback = "workflow") {
+  const raw = String(value ?? "")
+    .trim();
+  const normalized = raw
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized || fallback;
+}
+
+function buildChipFromType(type) {
+  const normalized = String(type ?? "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toUpperCase();
+  return normalized.slice(0, 5) || "NODE";
+}
+
+function normalizeNodeDefinition(rawDefinition = {}, fallbackType = "workflow") {
+  const source =
+    rawDefinition && typeof rawDefinition === "object" && !Array.isArray(rawDefinition)
+      ? rawDefinition
+      : {};
+  const type = normalizeNodeType(source.type, fallbackType);
+  const fallbackTitle = humanizeParamKey(type);
+  const title = normalizeLocalizedText(source.title, { zh: fallbackTitle, en: fallbackTitle });
+  const label = normalizeLocalizedText(source.label ?? source.title, title);
+  const chip = String(source.chip ?? buildChipFromType(type)).trim() || buildChipFromType(type);
+  const color = sanitizeNodeColor(source.color, DEFAULT_NODE_COLOR);
+
+  const defaultsSource =
+    source.defaults && typeof source.defaults === "object" && !Array.isArray(source.defaults)
+      ? source.defaults
+      : {};
+  const summary = String(defaultsSource.summary ?? source.summary ?? "Custom node module.");
+  const defaultItems = Array.isArray(defaultsSource.items)
+    ? defaultsSource.items
+    : Array.isArray(source.items)
+      ? source.items
+      : [{ title: "Details", content: "" }];
+  const defaultColor = sanitizeNodeColor(defaultsSource.color, color);
+
+  return {
+    chip,
+    title,
+    label,
+    color,
+    defaults: () => buildGenericNodeDefaults(defaultColor, summary, defaultItems)
+  };
+}
+
+function toNodeTypeEntries(rawNodeTypes) {
+  if (Array.isArray(rawNodeTypes)) return rawNodeTypes;
+  if (rawNodeTypes && typeof rawNodeTypes === "object") {
+    return Object.entries(rawNodeTypes).map(([type, definition]) => ({
+      ...(definition && typeof definition === "object" ? definition : {}),
+      type
+    }));
+  }
+  return [];
+}
+
+function ensureNodeTypeDefinition(nodeLibrary, rawType, rawDefinition = null) {
+  const type = normalizeNodeType(rawType, "workflow");
+  if (!nodeLibrary[type]) {
+    nodeLibrary[type] = normalizeNodeDefinition(
+      {
+        ...(rawDefinition && typeof rawDefinition === "object" ? rawDefinition : {}),
+        type
+      },
+      type
+    );
+  }
+  return nodeLibrary[type];
+}
+
+function buildNodeLibrary(rawNodeTypes) {
+  const nodeLibrary = {};
+
+  toNodeTypeEntries(rawNodeTypes).forEach((entry, index) => {
+    const type = normalizeNodeType(entry?.type, `custom-${index + 1}`);
+    nodeLibrary[type] = normalizeNodeDefinition(entry, type);
+  });
+
+  [
+    "metadata",
+    "workflow",
+    "prereq",
+    "env",
+    "guardrail",
+    "cli",
+    "python",
+    "js",
+    "condition",
+    "loop"
+  ].forEach((type) => ensureNodeTypeDefinition(nodeLibrary, type));
+
+  return nodeLibrary;
+}
+
+function normalizePresetTemplateNode(rawTemplate, index, nodeLibrary) {
+  if (!rawTemplate || typeof rawTemplate !== "object") return null;
+
+  const fallbackKey = `node-${index + 1}`;
+  const key = String(rawTemplate.key ?? fallbackKey).trim() || fallbackKey;
+  const type = normalizeNodeType(rawTemplate.type, "workflow");
+  ensureNodeTypeDefinition(nodeLibrary, type, rawTemplate.definition ?? rawTemplate.nodeType);
+  const definition = nodeLibrary[type] ?? nodeLibrary.workflow;
+  const label = normalizeLocalizedText(rawTemplate.label, definition?.label);
+  const params =
+    rawTemplate.params && typeof rawTemplate.params === "object" && !Array.isArray(rawTemplate.params)
+      ? rawTemplate.params
+      : {};
+
+  return {
+    key,
+    type,
+    dx: num(rawTemplate.dx, 0),
+    dy: num(rawTemplate.dy, 0),
+    label,
+    params
+  };
+}
+
+function normalizePreset(rawPreset, index, nodeLibrary) {
+  if (!rawPreset || typeof rawPreset !== "object") return null;
+
+  const id = String(rawPreset.id ?? `preset-${index + 1}`).trim() || `preset-${index + 1}`;
+  const title = normalizeLocalizedText(rawPreset.title, {
+    zh: `预设 ${index + 1}`,
+    en: `Preset ${index + 1}`
+  });
+  const desc = normalizeLocalizedText(rawPreset.desc ?? rawPreset.description, { zh: "", en: "" });
+
+  const usedKeys = new Set();
+  const nodes = (Array.isArray(rawPreset.nodes) ? rawPreset.nodes : [])
+    .map((template, templateIndex) => {
+      const normalized = normalizePresetTemplateNode(template, templateIndex, nodeLibrary);
+      if (!normalized) return null;
+
+      let nextKey = normalized.key;
+      if (usedKeys.has(nextKey)) nextKey = `${nextKey}-${templateIndex + 1}`;
+      usedKeys.add(nextKey);
+      return { ...normalized, key: nextKey };
+    })
+    .filter(Boolean);
+
+  if (!nodes.length) return null;
+
+  const keySet = new Set(nodes.map((node) => node.key));
+  const edges = (Array.isArray(rawPreset.edges) ? rawPreset.edges : [])
+    .map((edge) => {
+      if (!edge || typeof edge !== "object") return null;
+      const from = String(edge.from ?? "").trim();
+      const to = String(edge.to ?? "").trim();
+      if (!keySet.has(from) || !keySet.has(to)) return null;
+
+      return {
+        from,
+        to,
+        kind: String(edge.kind ?? "default").trim() || "default"
+      };
+    })
+    .filter(Boolean);
+
+  const requestedEntry = String(rawPreset.entry ?? "").trim();
+  const entry = keySet.has(requestedEntry) ? requestedEntry : nodes[0].key;
+
+  return { id, title, desc, entry, nodes, edges };
+}
+
+function buildFallbackPreset(nodeLibrary) {
+  ["prereq", "env", "workflow", "guardrail"].forEach((type) => ensureNodeTypeDefinition(nodeLibrary, type));
+  return {
     id: "skillSkeleton",
     title: { zh: "基础技能骨架", en: "Skill Skeleton" },
     desc: { zh: "Prereq + Env + Workflow + Guardrails", en: "Prereq + Env + Workflow + Guardrails" },
     entry: "pre",
     nodes: [
-      { key: "pre", type: "prereq", dx: 0, dy: 22, label: { zh: "前置检查", en: "Prerequisite" } },
-      { key: "env", type: "env", dx: 250, dy: 22, label: { zh: "环境配置", en: "Environment" } },
-      { key: "flow", type: "workflow", dx: 500, dy: 22, label: { zh: "核心流程", en: "Core Workflow" } },
-      { key: "safe", type: "guardrail", dx: 750, dy: 22, label: { zh: "护栏", en: "Guardrails" } }
+      { key: "pre", type: "prereq", dx: 0, dy: 22, label: normalizeLocalizedText("Prerequisite") },
+      { key: "env", type: "env", dx: 250, dy: 22, label: normalizeLocalizedText("Environment") },
+      { key: "flow", type: "workflow", dx: 500, dy: 22, label: normalizeLocalizedText("Core Workflow") },
+      { key: "safe", type: "guardrail", dx: 750, dy: 22, label: normalizeLocalizedText("Guardrails") }
     ],
     edges: [
       { from: "pre", to: "env", kind: "default" },
       { from: "env", to: "flow", kind: "default" },
       { from: "flow", to: "safe", kind: "default" }
     ]
-  },
-  {
-    id: "toolChain",
-    title: { zh: "工具链编排", en: "Tool Chain" },
-    desc: { zh: "CLI + Python + JS 工具节点串联", en: "CLI + Python + JS orchestration" },
-    entry: "cli",
-    nodes: [
-      { key: "cli", type: "cli", dx: 0, dy: 22, label: { zh: "CLI 执行", en: "CLI Step" } },
-      { key: "py", type: "python", dx: 250, dy: 22, label: { zh: "Python 处理", en: "Python Step" } },
-      { key: "js", type: "js", dx: 500, dy: 22, label: { zh: "JS 处理", en: "JS Step" } }
-    ],
-    edges: [
-      { from: "cli", to: "py", kind: "default" },
-      { from: "py", to: "js", kind: "default" }
-    ]
-  },
-  {
-    id: "resilientFlow",
-    title: { zh: "条件与循环流程", en: "Condition + Loop" },
-    desc: { zh: "通过 IF + LOOP 构建弹性工作流", en: "Resilient flow with IF + LOOP" },
-    entry: "if",
-    nodes: [
-      { key: "if", type: "condition", dx: 0, dy: 66, label: { zh: "条件判断", en: "Condition" } },
-      { key: "loop", type: "loop", dx: 258, dy: 22, label: { zh: "重试循环", en: "Retry Loop" } },
-      { key: "cli", type: "cli", dx: 516, dy: 22, label: { zh: "CLI 执行", en: "CLI" } },
-      { key: "safe", type: "guardrail", dx: 516, dy: 166, label: { zh: "收敛规则", en: "Convergence Rules" } }
-    ],
-    edges: [
-      { from: "if", to: "loop", kind: "true" },
-      { from: "if", to: "safe", kind: "false" },
-      { from: "loop", to: "cli", kind: "loop" },
-      { from: "cli", to: "loop", kind: "default" },
-      { from: "loop", to: "safe", kind: "exit" }
-    ]
-  }
-];
+  };
+}
+
+function buildPresetLibrary(rawPresets, nodeLibrary) {
+  const presets = (Array.isArray(rawPresets) ? rawPresets : [])
+    .map((preset, index) => normalizePreset(preset, index, nodeLibrary))
+    .filter(Boolean);
+
+  if (presets.length) return presets;
+  return [buildFallbackPreset(nodeLibrary)];
+}
+
+const NODE_LIBRARY = buildNodeLibrary(nodeEditorConfig?.nodeTypes);
+const PRESETS = buildPresetLibrary(nodeEditorConfig?.presets, NODE_LIBRARY);
 
 const USER_NODE_LIBRARY_KEY = "skillfo-user-node-library-v1";
 

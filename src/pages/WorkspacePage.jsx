@@ -3,6 +3,7 @@ import { useI18n } from "../i18n/I18nContext";
 import { fetchForgeMarketplace } from "../services/forgeMarketplaceApi";
 import {
   annotateMarkdownBlocks,
+  buildMarkdownAssociationConfig,
   highlightCode,
   normalizeLang,
   parseMarkdownBlocks,
@@ -271,11 +272,20 @@ function WorkspacePage() {
   );
   const activeDocumentName = activeDoc === "skillfo" ? "SKILLFO.md" : "SKILL.md";
   const currentMarkdown = activeDoc === "skillfo" ? generatedSkillfoMarkdown : skillMarkdown;
+  const markdownAssociationConfig = useMemo(
+    () => buildMarkdownAssociationConfig(NODE_LIBRARY),
+    []
+  );
   const markdownLines = currentMarkdown.split("\n").length;
   const markdownChars = currentMarkdown.length;
   const markdownBlocks = useMemo(
-    () => annotateMarkdownBlocks(parseMarkdownBlocks(currentMarkdown), graph.nodes),
-    [currentMarkdown, graph.nodes]
+    () =>
+      annotateMarkdownBlocks(
+        parseMarkdownBlocks(currentMarkdown, markdownAssociationConfig),
+        graph.nodes,
+        markdownAssociationConfig
+      ),
+    [currentMarkdown, graph.nodes, markdownAssociationConfig]
   );
   const selectedNodeIdSet = useMemo(() => new Set(effectiveSelectedNodeIds), [effectiveSelectedNodeIds]);
   const activeMarkdownBlock = useMemo(
@@ -296,9 +306,10 @@ function WorkspacePage() {
       createRawEditorStyle({
         currentMarkdown,
         isModuleColorMappingOn,
-        markdownBlocks
+        markdownBlocks,
+        moduleBackgroundColors: markdownAssociationConfig.moduleBackgroundColors
       }),
-    [currentMarkdown, isModuleColorMappingOn, markdownBlocks]
+    [currentMarkdown, isModuleColorMappingOn, markdownAssociationConfig.moduleBackgroundColors, markdownBlocks]
   );
 
   useEffect(() => {
@@ -949,23 +960,6 @@ function WorkspacePage() {
         ...(draft.metadata ?? {}),
         [key]: value
       })
-    }));
-  };
-
-  const changeSelectedType = (nextType) => {
-    if (!selectedNode) return;
-    const definition = NODE_LIBRARY[nextType] ?? NODE_LIBRARY.workflow;
-    commitGraph((draft) => ({
-      ...draft,
-      nodes: draft.nodes.map((node) =>
-        node.id === draft.selectedNodeId
-          ? {
-              ...node,
-              type: nextType,
-              params: normalizeNodeParams(node.params, definition)
-            }
-          : node
-      )
     }));
   };
 
@@ -1901,18 +1895,16 @@ function WorkspacePage() {
                       </label>
                       <label>
                         <span>{t("节点类型", "Node Type", "workspacePage.properties.nodeType")}</span>
-                        <select
-                          value={selectedNode.type}
-                          onChange={(event) => changeSelectedType(event.target.value)}
-                        >
-                          {Object.entries(NODE_LIBRARY)
-                            .filter(([type]) => type !== "metadata")
-                            .map(([type, definition]) => (
-                            <option key={type} value={type}>
-                              {pick(definition.title, isZh)}
-                            </option>
-                          ))}
-                        </select>
+                        <input
+                          type="text"
+                          readOnly
+                          value={`${pick(selectedDefinition?.title ?? selectedNode.type, isZh)} (${selectedNode.type})`}
+                          title={t(
+                            "节点类型由节点模板定义，属性栏已弃用类型切换",
+                            "Node type is defined by node template; type switching is deprecated in properties panel",
+                            "workspacePage.properties.nodeTypeDeprecatedHint"
+                          )}
+                        />
                       </label>
                       <label>
                         <span>{t("节点颜色", "Node Color", "workspacePage.properties.nodeColor")}</span>
@@ -2265,7 +2257,7 @@ function WorkspacePage() {
                   >
                     {markdownBlocks.map((block, blockIndex) => {
                     const moduleClass = isModuleColorMappingOn
-                      ? `md-module md-module-${block.module}`
+                      ? "md-module"
                       : "md-module md-module-no-map";
                     const isActiveBlock = activeMarkdownBlockId === block.id;
                     const isNodeLinkedBlock = block.relatedNodeIds.some((id) => selectedNodeIdSet.has(id));
@@ -2277,14 +2269,18 @@ function WorkspacePage() {
                     const primaryDefinition = primaryNode
                       ? NODE_LIBRARY[primaryNode.type] ?? NODE_LIBRARY.workflow
                       : null;
-                    const blockStyle = primaryNode
-                      ? {
-                          "--module-accent": sanitizeNodeColor(
+                    const fallbackModuleAccent =
+                      markdownAssociationConfig.moduleAccentColors?.[block.module] ??
+                      markdownAssociationConfig.moduleAccentColors?.general ??
+                      "#9fb3c8";
+                    const blockStyle = {
+                      "--module-accent": primaryNode
+                        ? sanitizeNodeColor(
                             normalizeNodeParams(primaryNode.params, primaryDefinition).color,
                             primaryDefinition?.color ?? DEFAULT_NODE_COLOR
                           )
-                        }
-                      : undefined;
+                        : fallbackModuleAccent
+                    };
                     const interactiveClassName = `${moduleClass} md-block${
                       isNodeLinkedBlock ? " is-linked" : ""
                     }${isRelatedToActiveBlock ? " is-related" : ""}${isActiveBlock ? " is-active" : ""}`;

@@ -1,0 +1,474 @@
+{
+  "nodeTypes": [
+    {
+      "type": "metadata",
+      "chip": "META",
+      "title": {
+        "zh": "元数据",
+        "en": "Metadata"
+      },
+      "label": {
+        "zh": "元数据",
+        "en": "Metadata"
+      },
+      "color": "#5bb8ff",
+      "defaults": {
+        "summary": "Describe what this skill is for.",
+        "items": [
+          {
+            "title": "Skill Name",
+            "content": "My Skill"
+          },
+          {
+            "title": "Description",
+            "content": "Describe what this skill is for."
+          },
+          {
+            "title": "When To Use",
+            "content": "Use when you need to produce a reusable SKILL.md."
+          },
+          {
+            "title": "Bait",
+            "content": "A short one-line lure for discovery."
+          }
+        ]
+      }
+    },
+    {
+      "type": "prereq",
+      "chip": "CHECK",
+      "title": {
+        "zh": "前置检查",
+        "en": "Prerequisite"
+      },
+      "label": {
+        "zh": "前置检查",
+        "en": "Prerequisite"
+      },
+      "color": "#ffb66f",
+      "defaults": {
+        "summary": "Run prerequisite checks before continuing.",
+        "items": [
+          {
+            "title": "Checks",
+            "content": "node --version\npython --version"
+          },
+          {
+            "title": "On Fail",
+            "content": "Stop and report missing prerequisites."
+          }
+        ]
+      }
+    },
+    {
+      "type": "env",
+      "chip": "ENV",
+      "title": {
+        "zh": "环境配置",
+        "en": "Environment"
+      },
+      "label": {
+        "zh": "环境配置",
+        "en": "Environment"
+      },
+      "color": "#7fe18f",
+      "defaults": {
+        "summary": "Prepare runtime paths and environment variables.",
+        "items": [
+          {
+            "title": "Paths",
+            "content": "workspace: ./\noutput: ./dist"
+          },
+          {
+            "title": "Variables",
+            "content": "OPENAI_API_KEY=\nCODEX_HOME="
+          }
+        ]
+      }
+    },
+    {
+      "type": "workflow",
+      "chip": "FLOW",
+      "title": {
+        "zh": "核心工作流",
+        "en": "Workflow"
+      },
+      "label": {
+        "zh": "核心工作流",
+        "en": "Workflow"
+      },
+      "color": "#8ea4ff",
+      "defaults": {
+        "summary": "Define the core workflow and key execution pattern.",
+        "items": [
+          {
+            "title": "Goal",
+            "content": "Define the core skill intent."
+          },
+          {
+            "title": "Pattern",
+            "content": "1. Gather context\n2. Structure documentation\n3. Review constraints"
+          }
+        ]
+      }
+    },
+    {
+      "type": "guardrail",
+      "chip": "SAFE",
+      "title": {
+        "zh": "护栏",
+        "en": "Guardrail"
+      },
+      "label": {
+        "zh": "护栏",
+        "en": "Guardrail"
+      },
+      "color": "#ff8f95",
+      "defaults": {
+        "summary": "Define safety rules and defensive constraints.",
+        "items": [
+          {
+            "title": "Rules",
+            "content": "- Validate inputs\n- Never delete data by default\n- Report failures clearly"
+          }
+        ]
+      }
+    },
+    {
+      "type": "cli",
+      "chip": "CLI",
+      "title": {
+        "zh": "CLI 工具",
+        "en": "CLI Tool"
+      },
+      "label": {
+        "zh": "CLI 工具",
+        "en": "CLI Tool"
+      },
+      "color": "#79b9ff",
+      "defaults": {
+        "summary": "Run CLI command templates.",
+        "items": [
+          {
+            "title": "Command",
+            "content": "npm run build"
+          },
+          {
+            "title": "Workdir",
+            "content": "."
+          }
+        ]
+      }
+    },
+    {
+      "type": "python",
+      "chip": "PY",
+      "title": {
+        "zh": "Python 脚本",
+        "en": "Python Script"
+      },
+      "label": {
+        "zh": "Python 脚本",
+        "en": "Python Script"
+      },
+      "color": "#7ec8ff",
+      "defaults": {
+        "summary": "Python script module.",
+        "items": [
+          {
+            "title": "Script",
+            "content": "print('hello from python')"
+          }
+        ]
+      }
+    },
+    {
+      "type": "js",
+      "chip": "JS",
+      "title": {
+        "zh": "JavaScript 脚本",
+        "en": "JavaScript Script"
+      },
+      "label": {
+        "zh": "JavaScript 脚本",
+        "en": "JavaScript Script"
+      },
+      "color": "#f6de72",
+      "defaults": {
+        "summary": "JavaScript script module.",
+        "items": [
+          {
+            "title": "Script",
+            "content": "console.log('hello from js')"
+          }
+        ]
+      }
+    },
+    {
+      "type": "condition",
+      "chip": "IF",
+      "title": {
+        "zh": "条件",
+        "en": "Condition"
+      },
+      "label": {
+        "zh": "条件",
+        "en": "Condition"
+      },
+      "color": "#d8b76c",
+      "defaults": {
+        "summary": "Conditional branch definition.",
+        "items": [
+          {
+            "title": "LHS",
+            "content": "score"
+          },
+          {
+            "title": "Operator",
+            "content": ">"
+          },
+          {
+            "title": "RHS",
+            "content": "6"
+          }
+        ]
+      }
+    },
+    {
+      "type": "loop",
+      "chip": "LOOP",
+      "title": {
+        "zh": "循环",
+        "en": "Loop"
+      },
+      "label": {
+        "zh": "循环",
+        "en": "Loop"
+      },
+      "color": "#f292d2",
+      "defaults": {
+        "summary": "Loop module and retry controls.",
+        "items": [
+          {
+            "title": "Iterations",
+            "content": "3"
+          },
+          {
+            "title": "Iterator",
+            "content": "item"
+          }
+        ]
+      }
+    }
+  ],
+  "presets": [
+    {
+      "id": "skillSkeleton",
+      "title": {
+        "zh": "基础技能骨架",
+        "en": "Skill Skeleton"
+      },
+      "desc": {
+        "zh": "Prereq + Env + Workflow + Guardrails",
+        "en": "Prereq + Env + Workflow + Guardrails"
+      },
+      "entry": "pre",
+      "nodes": [
+        {
+          "key": "pre",
+          "type": "prereq",
+          "dx": 0,
+          "dy": 22,
+          "label": {
+            "zh": "前置检查",
+            "en": "Prerequisite"
+          }
+        },
+        {
+          "key": "env",
+          "type": "env",
+          "dx": 250,
+          "dy": 22,
+          "label": {
+            "zh": "环境配置",
+            "en": "Environment"
+          }
+        },
+        {
+          "key": "flow",
+          "type": "workflow",
+          "dx": 500,
+          "dy": 22,
+          "label": {
+            "zh": "核心流程",
+            "en": "Core Workflow"
+          }
+        },
+        {
+          "key": "safe",
+          "type": "guardrail",
+          "dx": 750,
+          "dy": 22,
+          "label": {
+            "zh": "护栏",
+            "en": "Guardrails"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "pre",
+          "to": "env",
+          "kind": "default"
+        },
+        {
+          "from": "env",
+          "to": "flow",
+          "kind": "default"
+        },
+        {
+          "from": "flow",
+          "to": "safe",
+          "kind": "default"
+        }
+      ]
+    },
+    {
+      "id": "toolChain",
+      "title": {
+        "zh": "工具链编排",
+        "en": "Tool Chain"
+      },
+      "desc": {
+        "zh": "CLI + Python + JS 工具节点串联",
+        "en": "CLI + Python + JS orchestration"
+      },
+      "entry": "cli",
+      "nodes": [
+        {
+          "key": "cli",
+          "type": "cli",
+          "dx": 0,
+          "dy": 22,
+          "label": {
+            "zh": "CLI 执行",
+            "en": "CLI Step"
+          }
+        },
+        {
+          "key": "py",
+          "type": "python",
+          "dx": 250,
+          "dy": 22,
+          "label": {
+            "zh": "Python 处理",
+            "en": "Python Step"
+          }
+        },
+        {
+          "key": "js",
+          "type": "js",
+          "dx": 500,
+          "dy": 22,
+          "label": {
+            "zh": "JS 处理",
+            "en": "JS Step"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "cli",
+          "to": "py",
+          "kind": "default"
+        },
+        {
+          "from": "py",
+          "to": "js",
+          "kind": "default"
+        }
+      ]
+    },
+    {
+      "id": "resilientFlow",
+      "title": {
+        "zh": "条件与循环流程",
+        "en": "Condition + Loop"
+      },
+      "desc": {
+        "zh": "通过 IF + LOOP 构建弹性工作流",
+        "en": "Resilient flow with IF + LOOP"
+      },
+      "entry": "if",
+      "nodes": [
+        {
+          "key": "if",
+          "type": "condition",
+          "dx": 0,
+          "dy": 66,
+          "label": {
+            "zh": "条件判断",
+            "en": "Condition"
+          }
+        },
+        {
+          "key": "loop",
+          "type": "loop",
+          "dx": 258,
+          "dy": 22,
+          "label": {
+            "zh": "重试循环",
+            "en": "Retry Loop"
+          }
+        },
+        {
+          "key": "cli",
+          "type": "cli",
+          "dx": 516,
+          "dy": 22,
+          "label": {
+            "zh": "CLI 执行",
+            "en": "CLI"
+          }
+        },
+        {
+          "key": "safe",
+          "type": "guardrail",
+          "dx": 516,
+          "dy": 166,
+          "label": {
+            "zh": "收敛规则",
+            "en": "Convergence Rules"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "if",
+          "to": "loop",
+          "kind": "true"
+        },
+        {
+          "from": "if",
+          "to": "safe",
+          "kind": "false"
+        },
+        {
+          "from": "loop",
+          "to": "cli",
+          "kind": "loop"
+        },
+        {
+          "from": "cli",
+          "to": "loop",
+          "kind": "default"
+        },
+        {
+          "from": "loop",
+          "to": "safe",
+          "kind": "exit"
+        }
+      ]
+    }
+  ]
+}

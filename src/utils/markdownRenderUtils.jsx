@@ -1,14 +1,43 @@
-﻿const MODULE_NODE_TYPES = {
-  metadata: new Set(["*"]),
-  prereq: new Set(["*"]),
-  env: new Set(["*"]),
-  workflow: new Set(["*"]),
-  topology: new Set(["*"]),
-  paths: new Set(["*"]),
-  guardrail: new Set(["*"]),
-  folders: new Set(["*foldered"]),
-  notes: new Set(["*"]),
-  general: new Set()
+const DEFAULT_MODULE_ID = "general";
+const DEFAULT_GENERAL_BACKGROUND = "rgba(215, 227, 244, 0.06)";
+const DEFAULT_GENERAL_ACCENT = "#9fb3c8";
+const DEFAULT_MODULE_BACKGROUND_ALPHA = 0.08;
+
+const DEFAULT_HEADING_ALIASES = [
+  { moduleId: "metadata", keywords: ["overview", "概览", "metadata", "元数据"] },
+  { moduleId: "prereq", keywords: ["prerequisite", "前置"] },
+  { moduleId: "env", keywords: ["environment", "环境"] },
+  {
+    moduleId: "workflow",
+    keywords: [
+      "workflow",
+      "工作流",
+      "node modules",
+      "节点模块",
+      "node composition",
+      "节点编排",
+      "node properties",
+      "节点属性"
+    ]
+  },
+  { moduleId: "topology", keywords: ["topology", "拓扑", "edge topology", "连线拓扑"] },
+  { moduleId: "paths", keywords: ["execution paths", "执行路径"] },
+  { moduleId: "guardrail", keywords: ["guardrails", "护栏"] },
+  { moduleId: "folders", keywords: ["folders", "文件夹"] },
+  { moduleId: "notes", keywords: ["execution notes", "执行说明", "composer notes", "编排说明"] }
+];
+
+const DEFAULT_MODULE_RULES = {
+  [DEFAULT_MODULE_ID]: { mode: "none", typeKeys: [] },
+  metadata: { mode: "types", typeKeys: ["metadata"] },
+  prereq: { mode: "types", typeKeys: ["prereq"] },
+  env: { mode: "types", typeKeys: ["env"] },
+  workflow: { mode: "types", typeKeys: ["workflow"] },
+  topology: { mode: "all", typeKeys: [] },
+  paths: { mode: "all", typeKeys: [] },
+  guardrail: { mode: "types", typeKeys: ["guardrail"] },
+  folders: { mode: "foldered", typeKeys: [] },
+  notes: { mode: "all", typeKeys: [] }
 };
 
 const PARAM_LABELS = [
@@ -52,6 +81,191 @@ export const MODULE_BACKGROUND_COLORS = {
   folders: "rgba(74, 222, 128, 0.07)",
   notes: "rgba(97, 175, 239, 0.07)"
 };
+
+const MODULE_ACCENT_COLORS = {
+  general: "#9fb3c8",
+  metadata: "#66d9ef",
+  prereq: "#ffb454",
+  env: "#7ee787",
+  workflow: "#7aa2f7",
+  topology: "#a78bfa",
+  paths: "#f59e0b",
+  guardrail: "#fb7185",
+  folders: "#4ade80",
+  notes: "#61afef"
+};
+
+function normalizeTypeKey(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeModuleId(value, fallback = DEFAULT_MODULE_ID) {
+  const moduleId = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return moduleId || fallback;
+}
+
+function toHexColorOrFallback(value, fallback = DEFAULT_GENERAL_ACCENT) {
+  const color = String(value ?? "").trim();
+  if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color)) return fallback;
+  if (color.length === 4) {
+    return `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`;
+  }
+  return color.toLowerCase();
+}
+
+function hexToRgba(hexColor, alpha = DEFAULT_MODULE_BACKGROUND_ALPHA) {
+  const hex = toHexColorOrFallback(hexColor, DEFAULT_GENERAL_ACCENT).replace("#", "");
+  const r = Number.parseInt(hex.slice(0, 2), 16);
+  const g = Number.parseInt(hex.slice(2, 4), 16);
+  const b = Number.parseInt(hex.slice(4, 6), 16);
+  const a = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : DEFAULT_MODULE_BACKGROUND_ALPHA;
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function collectLocalizedValues(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return [value.zh, value.en, value.cn]
+    .filter(Boolean)
+    .map((item) => String(item));
+}
+
+function pushKeyword(targetSet, keyword) {
+  const text = String(keyword ?? "").trim().toLowerCase();
+  if (!text) return;
+  targetSet.add(text);
+  if (/^[a-z0-9_-]+$/.test(text)) {
+    targetSet.add(text.replace(/[-_]+/g, " "));
+  }
+}
+
+function normalizeRule(rule) {
+  const raw = rule && typeof rule === "object" && !Array.isArray(rule) ? rule : {};
+  const mode = ["all", "foldered", "types", "none"].includes(raw.mode) ? raw.mode : "none";
+  const typeKeys = Array.isArray(raw.typeKeys)
+    ? raw.typeKeys.map((item) => normalizeTypeKey(item)).filter(Boolean)
+    : [];
+  return {
+    mode,
+    typeKeys: Array.from(new Set(typeKeys))
+  };
+}
+
+function toRuleMap(rules = {}) {
+  const map = {};
+  Object.entries(rules).forEach(([moduleId, rule]) => {
+    map[normalizeModuleId(moduleId)] = normalizeRule(rule);
+  });
+  return map;
+}
+
+export function buildMarkdownAssociationConfig(nodeLibrary = {}, options = {}) {
+  const resolvedNodeLibrary = nodeLibrary && typeof nodeLibrary === "object" ? nodeLibrary : {};
+  const moduleKeywords = new Map();
+  const moduleRules = toRuleMap(DEFAULT_MODULE_RULES);
+  const moduleBackgroundColors = {
+    [DEFAULT_MODULE_ID]: String(options.generalBackgroundColor ?? MODULE_BACKGROUND_COLORS.general ?? DEFAULT_GENERAL_BACKGROUND)
+  };
+  const moduleAccentColors = {
+    [DEFAULT_MODULE_ID]: toHexColorOrFallback(options.generalAccentColor, DEFAULT_GENERAL_ACCENT)
+  };
+
+  Object.entries(MODULE_BACKGROUND_COLORS).forEach(([moduleId, color]) => {
+    const normalizedModuleId = normalizeModuleId(moduleId);
+    if (!moduleBackgroundColors[normalizedModuleId]) {
+      moduleBackgroundColors[normalizedModuleId] = color;
+    }
+  });
+
+  Object.entries(MODULE_ACCENT_COLORS).forEach(([moduleId, color]) => {
+    const normalizedModuleId = normalizeModuleId(moduleId);
+    if (!moduleAccentColors[normalizedModuleId]) {
+      moduleAccentColors[normalizedModuleId] = toHexColorOrFallback(color, DEFAULT_GENERAL_ACCENT);
+    }
+  });
+
+  const ensureKeywordSet = (moduleId) => {
+    const normalized = normalizeModuleId(moduleId);
+    if (!moduleKeywords.has(normalized)) moduleKeywords.set(normalized, new Set());
+    return moduleKeywords.get(normalized);
+  };
+
+  const registerAlias = (moduleId, keyword) => {
+    if (!keyword) return;
+    const list = Array.isArray(keyword) ? keyword : [keyword];
+    const bucket = ensureKeywordSet(moduleId);
+    list.forEach((item) => pushKeyword(bucket, item));
+  };
+
+  const ensureRule = (moduleId, nextRule) => {
+    const normalizedModuleId = normalizeModuleId(moduleId);
+    const previous = moduleRules[normalizedModuleId] ?? { mode: "none", typeKeys: [] };
+    const normalizedNextRule = normalizeRule(nextRule);
+    if (previous.mode === "types" && normalizedNextRule.mode === "types") {
+      moduleRules[normalizedModuleId] = {
+        mode: "types",
+        typeKeys: Array.from(new Set([...previous.typeKeys, ...normalizedNextRule.typeKeys]))
+      };
+      return;
+    }
+    if (previous.mode !== "none") return;
+    moduleRules[normalizedModuleId] = normalizedNextRule;
+  };
+
+  DEFAULT_HEADING_ALIASES.forEach((item) => registerAlias(item.moduleId, item.keywords));
+
+  Object.entries(resolvedNodeLibrary).forEach(([rawType, definition]) => {
+    const type = String(rawType ?? "").trim();
+    if (!type) return;
+
+    const moduleId = normalizeModuleId(type);
+    registerAlias(moduleId, [
+      type,
+      String(type).replace(/[-_]+/g, " "),
+      definition?.chip,
+      ...collectLocalizedValues(definition?.title),
+      ...collectLocalizedValues(definition?.label)
+    ]);
+
+    ensureRule(moduleId, { mode: "types", typeKeys: [normalizeTypeKey(type)] });
+    const accentColor = toHexColorOrFallback(definition?.color, DEFAULT_GENERAL_ACCENT);
+    moduleAccentColors[moduleId] = accentColor;
+    moduleBackgroundColors[moduleId] = hexToRgba(accentColor, DEFAULT_MODULE_BACKGROUND_ALPHA);
+  });
+
+  const extraAliases = Array.isArray(options.headingAliases) ? options.headingAliases : [];
+  extraAliases.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    registerAlias(item.moduleId, item.keywords);
+  });
+
+  const headingMatchers = Array.from(moduleKeywords.entries())
+    .map(([moduleId, keywordSet]) => ({
+      moduleId,
+      keywords: Array.from(keywordSet).sort((a, b) => b.length - a.length)
+    }))
+    .filter((item) => item.keywords.length > 0)
+    .sort((a, b) => {
+      const aLongest = a.keywords[0]?.length ?? 0;
+      const bLongest = b.keywords[0]?.length ?? 0;
+      return bLongest - aLongest;
+    });
+
+  return {
+    defaultModule: DEFAULT_MODULE_ID,
+    moduleRules,
+    headingMatchers,
+    moduleBackgroundColors,
+    moduleAccentColors
+  };
+}
+
+export const DEFAULT_MARKDOWN_ASSOCIATION_CONFIG = buildMarkdownAssociationConfig();
 
 function escapeHtml(text) {
   return String(text)
@@ -165,24 +379,22 @@ export function highlightCode(code, lang) {
     .join("\n");
 }
 
-function resolveModuleIdFromHeading(text) {
-  const raw = String(text || "");
-  const heading = raw.toLowerCase();
+function resolveModuleIdFromHeading(text, associationConfig = DEFAULT_MARKDOWN_ASSOCIATION_CONFIG) {
+  const heading = String(text ?? "").toLowerCase();
+  if (!heading) return associationConfig.defaultModule ?? DEFAULT_MODULE_ID;
 
-  if (heading.includes("overview") || raw.includes("概览")) return "metadata";
-  if (heading.includes("node modules") || raw.includes("节点模块")) return "workflow";
-  if (heading.includes("metadata") || raw.includes("元数据")) return "metadata";
-  if (heading.includes("prerequisite") || raw.includes("前置")) return "prereq";
-  if (heading.includes("environment") || raw.includes("环境")) return "env";
-  if (heading.includes("workflow") || raw.includes("工作流")) return "workflow";
-  if (heading.includes("node composition") || raw.includes("节点编排")) return "workflow";
-  if (heading.includes("topology") || raw.includes("拓扑")) return "topology";
-  if (heading.includes("execution paths") || raw.includes("执行路径")) return "paths";
-  if (heading.includes("guardrails") || raw.includes("护栏")) return "guardrail";
-  if (heading.includes("folders") || raw.includes("文件夹")) return "folders";
-  if (heading.includes("execution notes") || raw.includes("执行说明")) return "notes";
-  if (heading.includes("composer notes") || raw.includes("编排说明")) return "notes";
-  return "general";
+  const matchers = Array.isArray(associationConfig?.headingMatchers)
+    ? associationConfig.headingMatchers
+    : [];
+
+  for (const matcher of matchers) {
+    const keywords = Array.isArray(matcher?.keywords) ? matcher.keywords : [];
+    if (keywords.some((keyword) => heading.includes(String(keyword).toLowerCase()))) {
+      return normalizeModuleId(matcher.moduleId, associationConfig.defaultModule ?? DEFAULT_MODULE_ID);
+    }
+  }
+
+  return associationConfig.defaultModule ?? DEFAULT_MODULE_ID;
 }
 
 function toTableCellString(value) {
@@ -238,10 +450,14 @@ function tableAlignmentsFromSeparator(cells, width) {
   });
 }
 
-export function parseMarkdownBlocks(markdown) {
+export function parseMarkdownBlocks(markdown, associationConfig = DEFAULT_MARKDOWN_ASSOCIATION_CONFIG) {
   const lines = String(markdown || "").split("\n");
   const blocks = [];
-  let currentModule = "general";
+  const resolvedAssociation =
+    associationConfig && typeof associationConfig === "object"
+      ? associationConfig
+      : DEFAULT_MARKDOWN_ASSOCIATION_CONFIG;
+  let currentModule = resolvedAssociation.defaultModule ?? DEFAULT_MODULE_ID;
   let i = 0;
 
   while (i < lines.length) {
@@ -278,7 +494,7 @@ export function parseMarkdownBlocks(markdown) {
       const level = headingMatch[1].length;
       const text = headingMatch[2].trim();
       if (level === 2) {
-        currentModule = resolveModuleIdFromHeading(text);
+        currentModule = resolveModuleIdFromHeading(text, resolvedAssociation);
       }
       blocks.push({
         type: "heading",
@@ -445,15 +661,31 @@ function blockIncludesNodeLabel(text, label) {
   return false;
 }
 
-function fallbackNodeIdsByModule(moduleId, nodes) {
-  const config = MODULE_NODE_TYPES[moduleId] ?? MODULE_NODE_TYPES.general;
-  if (config.has("*")) {
+function fallbackNodeIdsByModule(moduleId, nodes, associationConfig = DEFAULT_MARKDOWN_ASSOCIATION_CONFIG) {
+  const normalizedModuleId = normalizeModuleId(moduleId, associationConfig.defaultModule ?? DEFAULT_MODULE_ID);
+  const fallbackModuleId = normalizeModuleId(
+    associationConfig.defaultModule ?? DEFAULT_MODULE_ID,
+    DEFAULT_MODULE_ID
+  );
+  const ruleMap = associationConfig?.moduleRules ?? {};
+  const rule = normalizeRule(ruleMap[normalizedModuleId] ?? ruleMap[fallbackModuleId] ?? { mode: "none" });
+
+  if (rule.mode === "all") {
     return nodes.map((node) => node.id);
   }
-  if (config.has("*foldered")) {
-    return nodes.filter((node) => node.params?.folderId).map((node) => node.id);
+
+  if (rule.mode === "foldered") {
+    return nodes.filter((node) => node.folderId).map((node) => node.id);
   }
-  return nodes.filter((node) => config.has(node.type)).map((node) => node.id);
+
+  if (rule.mode === "types") {
+    const typeKeySet = new Set(rule.typeKeys.map((item) => normalizeTypeKey(item)));
+    return nodes
+      .filter((node) => typeKeySet.has(normalizeTypeKey(node.type)))
+      .map((node) => node.id);
+  }
+
+  return [];
 }
 
 function nodeIdFromHeadingText(text, nodes) {
@@ -470,7 +702,15 @@ function nodeIdFromHeadingText(text, nodes) {
   return fuzzy?.id ?? null;
 }
 
-export function annotateMarkdownBlocks(blocks, nodes) {
+export function annotateMarkdownBlocks(
+  blocks,
+  nodes,
+  associationConfig = DEFAULT_MARKDOWN_ASSOCIATION_CONFIG
+) {
+  const resolvedAssociation =
+    associationConfig && typeof associationConfig === "object"
+      ? associationConfig
+      : DEFAULT_MARKDOWN_ASSOCIATION_CONFIG;
   const normalizedNodes = nodes
     .map((node) => ({
       id: node.id,
@@ -512,7 +752,7 @@ export function annotateMarkdownBlocks(blocks, nodes) {
         ? relatedByLabel
         : currentSectionNodeId
           ? [currentSectionNodeId]
-          : fallbackNodeIdsByModule(block.module, normalizedNodes);
+          : fallbackNodeIdsByModule(block.module, normalizedNodes, resolvedAssociation);
 
     const relatedNodeIds = Array.from(
       new Set(contextualIds)

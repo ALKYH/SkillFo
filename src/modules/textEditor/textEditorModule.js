@@ -1,7 +1,21 @@
-import { MODULE_BACKGROUND_COLORS } from "../../utils/markdownRenderUtils";
+const DEFAULT_RAW_EDITOR_MODULE_BACKGROUND_COLORS = {
+  general: "rgba(215, 227, 244, 0.06)"
+};
 
-function createRawEditorStyle({ currentMarkdown, isModuleColorMappingOn, markdownBlocks }) {
+function createRawEditorStyle({
+  currentMarkdown,
+  isModuleColorMappingOn,
+  markdownBlocks,
+  moduleBackgroundColors
+}) {
   if (!isModuleColorMappingOn) return undefined;
+  const colors =
+    moduleBackgroundColors && typeof moduleBackgroundColors === "object"
+      ? moduleBackgroundColors
+      : DEFAULT_RAW_EDITOR_MODULE_BACKGROUND_COLORS;
+  const generalColor = String(
+    colors.general ?? DEFAULT_RAW_EDITOR_MODULE_BACKGROUND_COLORS.general
+  );
 
   const totalLines = Math.max(String(currentMarkdown ?? "").split("\n").length, 1);
   const sortedBlocks = [...markdownBlocks].sort(
@@ -21,13 +35,13 @@ function createRawEditorStyle({ currentMarkdown, isModuleColorMappingOn, markdow
       const gapStart = ((cursor / totalLines) * 100).toFixed(3);
       const gapEnd = ((startLine / totalLines) * 100).toFixed(3);
       segments.push(
-        `${MODULE_BACKGROUND_COLORS.general} ${gapStart}%, ${MODULE_BACKGROUND_COLORS.general} ${gapEnd}%`
+        `${generalColor} ${gapStart}%, ${generalColor} ${gapEnd}%`
       );
     }
 
     const start = ((startLine / totalLines) * 100).toFixed(3);
     const end = ((endLine / totalLines) * 100).toFixed(3);
-    const color = MODULE_BACKGROUND_COLORS[block.module] ?? MODULE_BACKGROUND_COLORS.general;
+    const color = String(colors[block.module] ?? generalColor);
     segments.push(`${color} ${start}%, ${color} ${end}%`);
     cursor = Math.max(cursor, endLine);
   });
@@ -35,12 +49,12 @@ function createRawEditorStyle({ currentMarkdown, isModuleColorMappingOn, markdow
   if (cursor < totalLines) {
     const tailStart = ((cursor / totalLines) * 100).toFixed(3);
     segments.push(
-      `${MODULE_BACKGROUND_COLORS.general} ${tailStart}%, ${MODULE_BACKGROUND_COLORS.general} 100%`
+      `${generalColor} ${tailStart}%, ${generalColor} 100%`
     );
   }
 
   if (!segments.length) {
-    segments.push(`${MODULE_BACKGROUND_COLORS.general} 0%, ${MODULE_BACKGROUND_COLORS.general} 100%`);
+    segments.push(`${generalColor} 0%, ${generalColor} 100%`);
   }
 
   return {

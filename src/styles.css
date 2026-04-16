@@ -1468,6 +1468,7 @@ select,
   cursor: grab;
   color: var(--text);
   backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   z-index: 3;
   background: linear-gradient(
     140deg,
