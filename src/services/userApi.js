@@ -1,94 +1,5 @@
 const DEFAULT_TIMEOUT_MS = 7000;
 const SESSION_STORAGE_KEY = "skillfo-user-session-v1";
-const MOCK_NETWORK_DELAY_MS = 220;
-
-const DEMO_USER = {
-  id: "usr-demo-001",
-  username: "craftpilot",
-  displayName: "Craft Pilot",
-  email: "craftpilot@skillfo.dev",
-  role: "creator",
-  bio: "I build reusable node packs and workflow templates for automation teams.",
-  location: "Shanghai",
-  website: "https://skillfo.dev/u/craftpilot",
-  company: "SkillFo Labs",
-  joinedAt: "2025-08-03T04:20:00Z",
-  lastLoginAt: new Date().toISOString()
-};
-
-const DEMO_DASHBOARD = {
-  stats: {
-    templates: 24,
-    packs: 11,
-    likes: 1920,
-    downloads: 12480,
-    followers: 456,
-    following: 97
-  },
-  activity: [
-    {
-      id: "act-001",
-      type: "publish",
-      title: "Published template: Incident Triage Ladder",
-      timestamp: "2026-04-14T10:40:00Z"
-    },
-    {
-      id: "act-002",
-      type: "update",
-      title: "Updated node pack: Guardrail Essentials",
-      timestamp: "2026-04-12T02:16:00Z"
-    },
-    {
-      id: "act-003",
-      type: "milestone",
-      title: "Reached 10k total downloads",
-      timestamp: "2026-04-08T07:28:00Z"
-    }
-  ],
-  templates: [
-    {
-      id: "tpl-user-01",
-      title: "Incident Triage Ladder",
-      visibility: "public",
-      likes: 232,
-      downloads: 1804,
-      updatedAt: "2026-04-14T10:40:00Z"
-    },
-    {
-      id: "tpl-user-02",
-      title: "Release Checklist Runner",
-      visibility: "public",
-      likes: 177,
-      downloads: 1312,
-      updatedAt: "2026-04-11T03:02:00Z"
-    },
-    {
-      id: "tpl-user-03",
-      title: "Ops Notes to Runbook",
-      visibility: "private",
-      likes: 51,
-      downloads: 294,
-      updatedAt: "2026-04-06T12:54:00Z"
-    }
-  ],
-  preferences: {
-    defaultVisibility: "public",
-    notifyByEmail: true,
-    language: "zh-CN",
-    defaultSort: "latest"
-  }
-};
-
-const mockState = {
-  user: { ...DEMO_USER },
-  dashboard: JSON.parse(JSON.stringify(DEMO_DASHBOARD))
-};
-
-function wait(ms = MOCK_NETWORK_DELAY_MS) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 function toIso(value, fallback = new Date().toISOString()) {
   const parsed = value ? new Date(value) : null;
@@ -96,10 +7,6 @@ function toIso(value, fallback = new Date().toISOString()) {
     return fallback;
   }
   return parsed.toISOString();
-}
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
 }
 
 function normalizeUser(raw = {}) {
@@ -113,7 +20,7 @@ function normalizeUser(raw = {}) {
     location: String(raw.location ?? ""),
     website: String(raw.website ?? ""),
     company: String(raw.company ?? ""),
-    joinedAt: toIso(raw.joinedAt, DEMO_USER.joinedAt),
+    joinedAt: toIso(raw.joinedAt),
     lastLoginAt: toIso(raw.lastLoginAt)
   };
 }
@@ -176,6 +83,14 @@ function normalizeDashboard(raw = {}) {
 function getApiBase(options = {}) {
   const apiBase = options.apiBase ?? import.meta.env.VITE_USER_API_BASE_URL;
   return String(apiBase ?? "").trim().replace(/\/$/, "");
+}
+
+function requireApiBase(options = {}) {
+  const base = getApiBase(options);
+  if (!base) {
+    throw new Error("User API base URL is not configured.");
+  }
+  return base;
 }
 
 function createTimeoutSignal(parentSignal, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -249,9 +164,22 @@ function buildAuthHeaders(session, extra = {}) {
   return headers;
 }
 
+async function parseApiError(response, fallbackMessage) {
+  try {
+    const payload = await response.json();
+    const message =
+      payload?.error?.message ??
+      payload?.error ??
+      payload?.message ??
+      fallbackMessage;
+    return new Error(String(message));
+  } catch {
+    return new Error(fallbackMessage);
+  }
+}
+
 async function loginRemote(credentials, options = {}) {
-  const base = getApiBase(options);
-  if (!base) return null;
+  const base = requireApiBase(options);
 
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
@@ -267,7 +195,7 @@ async function loginRemote(credentials, options = {}) {
     });
 
     if (!response.ok) {
-      throw new Error(`User API ${response.status}`);
+      throw await parseApiError(response, `User API ${response.status}`);
     }
 
     const payload = await response.json();
@@ -285,8 +213,10 @@ async function loginRemote(credentials, options = {}) {
 }
 
 async function fetchCurrentUserRemote(session, options = {}) {
-  const base = getApiBase(options);
-  if (!base || !session?.accessToken) return null;
+  const base = requireApiBase(options);
+  if (!session?.accessToken) {
+    throw new Error("Missing session token.");
+  }
 
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
@@ -297,7 +227,7 @@ async function fetchCurrentUserRemote(session, options = {}) {
     });
 
     if (!response.ok) {
-      throw new Error(`User API ${response.status}`);
+      throw await parseApiError(response, `User API ${response.status}`);
     }
 
     const payload = await response.json();
@@ -311,8 +241,10 @@ async function fetchCurrentUserRemote(session, options = {}) {
 }
 
 async function fetchUserHomeRemote(session, options = {}) {
-  const base = getApiBase(options);
-  if (!base || !session?.accessToken) return null;
+  const base = requireApiBase(options);
+  if (!session?.accessToken) {
+    throw new Error("Missing session token.");
+  }
 
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
@@ -323,7 +255,7 @@ async function fetchUserHomeRemote(session, options = {}) {
     });
 
     if (!response.ok) {
-      throw new Error(`User API ${response.status}`);
+      throw await parseApiError(response, `User API ${response.status}`);
     }
 
     const payload = await response.json();
@@ -337,8 +269,10 @@ async function fetchUserHomeRemote(session, options = {}) {
 }
 
 async function updateProfileRemote(patch, session, options = {}) {
-  const base = getApiBase(options);
-  if (!base || !session?.accessToken) return null;
+  const base = requireApiBase(options);
+  if (!session?.accessToken) {
+    throw new Error("Missing session token.");
+  }
 
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
@@ -353,7 +287,7 @@ async function updateProfileRemote(patch, session, options = {}) {
     });
 
     if (!response.ok) {
-      throw new Error(`User API ${response.status}`);
+      throw await parseApiError(response, `User API ${response.status}`);
     }
 
     const payload = await response.json();
@@ -367,8 +301,10 @@ async function updateProfileRemote(patch, session, options = {}) {
 }
 
 async function updatePreferencesRemote(patch, session, options = {}) {
-  const base = getApiBase(options);
-  if (!base || !session?.accessToken) return null;
+  const base = requireApiBase(options);
+  if (!session?.accessToken) {
+    throw new Error("Missing session token.");
+  }
 
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
@@ -383,7 +319,7 @@ async function updatePreferencesRemote(patch, session, options = {}) {
     });
 
     if (!response.ok) {
-      throw new Error(`User API ${response.status}`);
+      throw await parseApiError(response, `User API ${response.status}`);
     }
 
     const payload = await response.json();
@@ -396,106 +332,8 @@ async function updatePreferencesRemote(patch, session, options = {}) {
   }
 }
 
-function mockSession() {
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 12).toISOString();
-  const accessToken = `mock_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-  return { accessToken, refreshToken: "", expiresAt };
-}
-
-async function loginMock(credentials = {}) {
-  const identifier = String(credentials.identifier ?? "").trim();
-  const password = String(credentials.password ?? "");
-
-  await wait();
-
-  if (!identifier) {
-    throw new Error("Please enter username or email.");
-  }
-
-  if (password.length < 4) {
-    throw new Error("Password must be at least 4 characters.");
-  }
-
-  const lower = identifier.toLowerCase();
-  const nextUser = {
-    ...mockState.user,
-    username: lower.includes("@") ? lower.split("@")[0] : lower,
-    displayName: identifier,
-    email: lower.includes("@") ? lower : `${lower}@skillfo.dev`,
-    lastLoginAt: new Date().toISOString()
-  };
-
-  mockState.user = normalizeUser(nextUser);
-
-  return {
-    user: clone(mockState.user),
-    session: mockSession(),
-    backend: "mock"
-  };
-}
-
-async function fetchCurrentUserMock() {
-  await wait(120);
-  return {
-    user: clone(mockState.user),
-    backend: "mock"
-  };
-}
-
-async function fetchUserHomeMock() {
-  await wait(180);
-  return {
-    dashboard: normalizeDashboard(mockState.dashboard),
-    backend: "mock"
-  };
-}
-
-async function updateProfileMock(patch = {}) {
-  await wait(180);
-  mockState.user = normalizeUser({
-    ...mockState.user,
-    displayName: patch.displayName ?? mockState.user.displayName,
-    bio: patch.bio ?? mockState.user.bio,
-    location: patch.location ?? mockState.user.location,
-    website: patch.website ?? mockState.user.website,
-    company: patch.company ?? mockState.user.company
-  });
-
-  return {
-    user: clone(mockState.user),
-    backend: "mock"
-  };
-}
-
-async function updatePreferencesMock(patch = {}) {
-  await wait(180);
-  const nextPreferences = normalizePreferences({
-    ...mockState.dashboard.preferences,
-    ...patch
-  });
-
-  mockState.dashboard = {
-    ...mockState.dashboard,
-    preferences: nextPreferences
-  };
-
-  return {
-    preferences: clone(nextPreferences),
-    backend: "mock"
-  };
-}
-
 export async function loginUser(credentials, options = {}) {
-  try {
-    const remote = await loginRemote(credentials, options);
-    if (remote?.session?.accessToken) {
-      return remote;
-    }
-    return loginMock(credentials);
-  } catch (error) {
-    if (error.name === "AbortError") throw error;
-    return loginMock(credentials);
-  }
+  return loginRemote(credentials, options);
 }
 
 export async function fetchCurrentUser(session, options = {}) {
@@ -503,16 +341,7 @@ export async function fetchCurrentUser(session, options = {}) {
     throw new Error("Missing session token.");
   }
 
-  try {
-    const remote = await fetchCurrentUserRemote(session, options);
-    if (remote?.user?.id) {
-      return remote;
-    }
-    return fetchCurrentUserMock();
-  } catch (error) {
-    if (error.name === "AbortError") throw error;
-    return fetchCurrentUserMock();
-  }
+  return fetchCurrentUserRemote(session, options);
 }
 
 export async function fetchUserHomeData(session, options = {}) {
@@ -520,16 +349,7 @@ export async function fetchUserHomeData(session, options = {}) {
     throw new Error("Missing session token.");
   }
 
-  try {
-    const remote = await fetchUserHomeRemote(session, options);
-    if (remote?.dashboard) {
-      return remote;
-    }
-    return fetchUserHomeMock();
-  } catch (error) {
-    if (error.name === "AbortError") throw error;
-    return fetchUserHomeMock();
-  }
+  return fetchUserHomeRemote(session, options);
 }
 
 export async function updateUserProfile(patch, session, options = {}) {
@@ -537,16 +357,7 @@ export async function updateUserProfile(patch, session, options = {}) {
     throw new Error("Missing session token.");
   }
 
-  try {
-    const remote = await updateProfileRemote(patch, session, options);
-    if (remote?.user) {
-      return remote;
-    }
-    return updateProfileMock(patch);
-  } catch (error) {
-    if (error.name === "AbortError") throw error;
-    return updateProfileMock(patch);
-  }
+  return updateProfileRemote(patch, session, options);
 }
 
 export async function updateUserPreferences(patch, session, options = {}) {
@@ -554,36 +365,32 @@ export async function updateUserPreferences(patch, session, options = {}) {
     throw new Error("Missing session token.");
   }
 
-  try {
-    const remote = await updatePreferencesRemote(patch, session, options);
-    if (remote?.preferences) {
-      return remote;
-    }
-    return updatePreferencesMock(patch);
-  } catch (error) {
-    if (error.name === "AbortError") throw error;
-    return updatePreferencesMock(patch);
-  }
+  return updatePreferencesRemote(patch, session, options);
 }
 
 export async function logoutUser(session, options = {}) {
   const base = getApiBase(options);
   if (!base || !session?.accessToken) {
-    return { ok: true, backend: "mock" };
+    return { ok: true, backend: "remote" };
   }
 
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    await fetch(`${base}/api/auth/logout`, {
+    const response = await fetch(`${base}/api/auth/logout`, {
       method: "POST",
       signal,
       headers: buildAuthHeaders(session)
     });
+
+    if (!response.ok) {
+      const error = await parseApiError(response, `User API ${response.status}`);
+      return { ok: false, backend: "remote", error: error.message };
+    }
     return { ok: true, backend: "remote" };
   } catch (error) {
     if (error.name === "AbortError") throw error;
-    return { ok: true, backend: "mock" };
+    return { ok: false, backend: "remote", error: error.message ?? "Logout failed." };
   } finally {
     dispose();
   }

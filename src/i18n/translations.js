@@ -44,7 +44,7 @@ export const translations = {
       namePlaceholder: "示例:you@skillfo.dev",
       password: "密码",
       passwordPlaceholder: "至少四个字符",
-      authHint: "Frontend pre-integration mode: any account works with 4+ char password.",
+      authHint: "使用后端真实账号登录。示例账号: craftpilot / skillfo123",
       cancel: "取消",
       signingIn: "登录中...",
       signInBtn:"登录"
@@ -74,6 +74,10 @@ export const translations = {
         command: "$ workspace -u current --list-files",
         meta: "当前用户工作区文件（ls -l 风格）",
         jumpDocs: "跳转文档主内容",
+        loading: "加载工作区文件中...",
+        loadFailed: "加载工作区文件失败。",
+        empty: "暂无工作区文件",
+        signInToLoad: "登录后查看你的工作区文件",
         columns: {
           mode: "MODE",
           owner: "OWNER",
@@ -191,7 +195,7 @@ export const translations = {
       backend: {
         label: "数据源",
         remote: "远程后端",
-        mock: "Mock 预集成"
+        unavailable: "后端不可用"
       },
       actions: {
         refreshAccount: "刷新账号",
@@ -269,12 +273,12 @@ export const translations = {
       sectionTag: "工坊市场",
       title: "节点库与组合模板",
       copy:
-        "统一检索官方与用户共享内容，支持分类、来源、类型、复杂度、节点区间、标签和排序规则。",
+        "统一检索官方与用户共享内容，明确展示不同功能的 SKILLFO.md 模板与不同功能的预制节点库，支持分类、来源、类型、复杂度、节点区间、标签和排序规则。",
       searchPlaceholder: "搜索标题、作者、标签、描述...",
       reset: "重置",
       backend: {
         connected: "后端: 已连接",
-        mock: "后端: Mock 数据"
+        unavailable: "后端: 不可用"
       },
       results: "结果",
       page: "页码",
@@ -327,10 +331,18 @@ export const translations = {
       metrics: {
         author: "作者",
         category: "分类",
+        functionFocus: "功能",
+        deliverable: "产出",
         complexity: "复杂度",
         nodes: "节点",
         likes: "点赞",
         downloads: "下载"
+      },
+      workshop: {
+        skillfoTemplates: "SKILLFO.md 模板",
+        presetNodeLibraries: "预制节点库",
+        skillfoByFunction: "模板功能:",
+        nodeLibraryByFunction: "节点库功能:"
       },
       use: "使用",
       showing: "当前显示",
@@ -395,6 +407,7 @@ export const translations = {
         nodes: "节点",
         downloads: "下载",
         noImportedPacks: "暂无导入节点包",
+        signInHintForImported: "登录后查看你导入的节点包",
         loading: "加载中...",
         noDownloadedPacks: "暂无下载节点包"
       },
@@ -489,7 +502,7 @@ export const translations = {
       namePlaceholder: "For example: craftpilot or you@skillfo.dev",
       password: "Password",
       passwordPlaceholder: "At least 4 characters",
-      authHint: "Frontend pre-integration mode: any account works with 4+ char password.",
+      authHint: "Sign in with real backend credentials. Demo: craftpilot / skillfo123",
       cancel: "Cancel",
       signingIn: "Signing in...",
       signInBtn:"Sign in"
@@ -519,6 +532,10 @@ export const translations = {
         command: "$ workspace -u current --list-files",
         meta: "Current user workspace files (ls -l style)",
         jumpDocs: "Jump to Docs Main",
+        loading: "Loading workspace files...",
+        loadFailed: "Failed to load workspace files.",
+        empty: "No workspace files yet",
+        signInToLoad: "Sign in to load your workspace files",
         columns: {
           mode: "MODE",
           owner: "OWNER",
@@ -638,7 +655,7 @@ export const translations = {
       backend: {
         label: "Data source",
         remote: "Remote backend",
-        mock: "Mock pre-integration"
+        unavailable: "Backend unavailable"
       },
       actions: {
         refreshAccount: "Refresh account",
@@ -716,12 +733,12 @@ export const translations = {
       sectionTag: "Forge Marketplace",
       title: "Node Libraries & Combo Templates",
       copy:
-        "Search official and user-shared content with category, type, complexity, node range, tags, and ranking rules.",
+        "Search official and user-shared content with explicit function-based SKILLFO.md templates and preset node libraries, with category, type, complexity, node range, tags, and ranking rules.",
       searchPlaceholder: "Search title, author, tags, description...",
       reset: "Reset",
       backend: {
         connected: "Backend: Connected",
-        mock: "Backend: Mock data"
+        unavailable: "Backend: Unavailable"
       },
       results: "Results",
       page: "Page",
@@ -774,10 +791,18 @@ export const translations = {
       metrics: {
         author: "Author",
         category: "Category",
+        functionFocus: "Function",
+        deliverable: "Deliverable",
         complexity: "Complexity",
         nodes: "Nodes",
         likes: "Likes",
         downloads: "Downloads"
+      },
+      workshop: {
+        skillfoTemplates: "SKILLFO.md Templates",
+        presetNodeLibraries: "Preset Node Libraries",
+        skillfoByFunction: "Template Function:",
+        nodeLibraryByFunction: "Node Library Function:"
       },
       use: "Use",
       showing: "Showing",
@@ -842,6 +867,7 @@ export const translations = {
         nodes: "Nodes",
         downloads: "Downloads",
         noImportedPacks: "No imported node packs",
+        signInHintForImported: "Sign in to view your imported node packs",
         loading: "Loading...",
         noDownloadedPacks: "No downloaded node packs"
       },

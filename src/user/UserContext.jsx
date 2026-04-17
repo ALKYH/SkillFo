@@ -15,7 +15,7 @@ const UserContext = createContext(null);
 export function UserProvider({ children }) {
   const [session, setSession] = useState(() => getStoredSession());
   const [user, setUser] = useState(null);
-  const [backend, setBackend] = useState("mock");
+  const [backend, setBackend] = useState("remote");
   const [isInitializing, setIsInitializing] = useState(Boolean(session));
   const [isBusy, setIsBusy] = useState(false);
   const [authError, setAuthError] = useState("");
@@ -28,7 +28,7 @@ export function UserProvider({ children }) {
 
     const result = await fetchCurrentUser(activeSession);
     setUser(result.user);
-    setBackend(result.backend ?? "mock");
+    setBackend(result.backend ?? "remote");
   }, []);
 
   useEffect(() => {
@@ -69,7 +69,7 @@ export function UserProvider({ children }) {
       const nextSession = persistSession(result.session);
       setSession(nextSession);
       setUser(result.user);
-      setBackend(result.backend ?? "mock");
+      setBackend(result.backend ?? "remote");
       return { ok: true, user: result.user };
     } catch (error) {
       const message = error?.message || "Login failed.";

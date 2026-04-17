@@ -1,6 +1,7 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { fetchForgeMarketplace } from "../services/forgeMarketplaceApi";
+import { useUser } from "../user/UserContext";
 import {
   annotateMarkdownBlocks,
   buildMarkdownAssociationConfig,
@@ -22,7 +23,6 @@ import {
   EDGE_LABEL,
   INITIAL_GRAPH,
   DRAG_GRID,
-  readUserImportedNodePacks,
   normalizeSkillMetadata,
   sanitizeNodeColor,
   normalizeItemType,
@@ -61,7 +61,9 @@ import {
 
 function WorkspacePage() {
   const { locale, t: i18nT } = useI18n();
+  const { isAuthenticated, session } = useUser();
   const isZh = locale.startsWith("zh");
+  const sessionToken = session?.accessToken ?? "";
   // Route all page-local bilingual text through the i18n framework with explicit keys.
   const t = (zh, en, key) => i18nT(key, isZh ? zh : en);
 
@@ -91,7 +93,9 @@ function WorkspacePage() {
     imported: true,
     downloaded: true
   });
-  const [importedNodePacks] = useState(() => readUserImportedNodePacks());
+  const [importedNodePacks, setImportedNodePacks] = useState([]);
+  const [importedNodePacksLoading, setImportedNodePacksLoading] = useState(false);
+  const [importedNodePacksError, setImportedNodePacksError] = useState("");
   const [downloadedNodePacks, setDownloadedNodePacks] = useState([]);
   const [downloadedNodePacksLoading, setDownloadedNodePacksLoading] = useState(true);
   const [downloadedNodePacksError, setDownloadedNodePacksError] = useState("");
@@ -104,6 +108,47 @@ function WorkspacePage() {
   const markdownTextareaRef = useRef(null);
   const didNodeDragMoveRef = useRef(false);
   const suppressNodeClickRef = useRef(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    if (!isAuthenticated || !sessionToken) {
+      setImportedNodePacks([]);
+      setImportedNodePacksError("");
+      setImportedNodePacksLoading(false);
+      return () => controller.abort();
+    }
+
+    const run = async () => {
+      setImportedNodePacksLoading(true);
+      setImportedNodePacksError("");
+
+      try {
+        const result = await fetchForgeMarketplace(
+          {
+            scope: "mine",
+            type: "node-pack",
+            sortBy: "latest",
+            page: 1,
+            pageSize: 20
+          },
+          { signal: controller.signal, session }
+        );
+
+        setImportedNodePacks(result.items ?? []);
+      } catch (error) {
+        if (error.name === "AbortError") return;
+        setImportedNodePacks([]);
+        setImportedNodePacksError(error.message || "Failed to load imported node packs.");
+      } finally {
+        setImportedNodePacksLoading(false);
+      }
+    };
+
+    run();
+
+    return () => controller.abort();
+  }, [isAuthenticated, session, sessionToken]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1665,21 +1710,39 @@ function WorkspacePage() {
                       >
                         <span>{libraryGroupOpen.imported ? "v" : ">"}</span>
                         <span>{t("用户导入", "User Imported", "workspacePage.library.groups.imported")}</span>
-                        <span className="group-count">{filteredImportedNodePacks.length}</span>
+                        <span className="group-count">
+                          {importedNodePacksLoading ? "..." : filteredImportedNodePacks.length}
+                        </span>
                       </button>
                       {libraryGroupOpen.imported && (
                         <ul className="node-library-list">
-                          {filteredImportedNodePacks.map((item) => (
-                            <li key={item.id} className="node-library-item">
-                              <div>
-                                <h4>{item.title}</h4>
-                                <p>{t("节点", "Nodes", "workspacePage.library.nodes")}: {item.nodeCount}</p>
-                              </div>
-                            </li>
-                          ))}
-                          {filteredImportedNodePacks.length === 0 && (
-                            <li className="node-library-empty">{t("暂无导入节点包", "No imported node packs", "workspacePage.library.noImportedPacks")}</li>
+                          {importedNodePacksLoading && (
+                            <li className="node-library-empty">{t("加载中...", "Loading...", "workspacePage.library.loading")}</li>
                           )}
+                          {!importedNodePacksLoading && importedNodePacksError && (
+                            <li className="node-library-empty is-error">{importedNodePacksError}</li>
+                          )}
+                          {!importedNodePacksLoading &&
+                            !importedNodePacksError &&
+                            filteredImportedNodePacks.map((item) => (
+                              <li key={item.id} className="node-library-item">
+                                <div>
+                                  <h4>{item.title}</h4>
+                                  <p>
+                                    {t("节点", "Nodes", "workspacePage.library.nodes")}: {item.nodeCount}
+                                  </p>
+                                </div>
+                              </li>
+                            ))}
+                          {!importedNodePacksLoading &&
+                            !importedNodePacksError &&
+                            filteredImportedNodePacks.length === 0 && (
+                              <li className="node-library-empty">
+                                {isAuthenticated
+                                  ? t("暂无导入节点包", "No imported node packs", "workspacePage.library.noImportedPacks")
+                                  : t("登录后查看你导入的节点包", "Sign in to view your imported node packs", "workspacePage.library.signInHintForImported")}
+                              </li>
+                            )}
                         </ul>
                       )}
                     </section>
@@ -2506,4 +2569,5 @@ function WorkspacePage() {
 }
 
 export default WorkspacePage;
+
 

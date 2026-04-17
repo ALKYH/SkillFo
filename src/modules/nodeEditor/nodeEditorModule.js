@@ -446,49 +446,6 @@ function buildPresetLibrary(rawPresets, nodeLibrary) {
 const NODE_LIBRARY = buildNodeLibrary(nodeEditorConfig?.nodeTypes);
 const PRESETS = buildPresetLibrary(nodeEditorConfig?.presets, NODE_LIBRARY);
 
-const USER_NODE_LIBRARY_KEY = "skillfo-user-node-library-v1";
-
-const DEFAULT_IMPORTED_NODE_PACKS = [
-  {
-    id: "imported-quality-gate",
-    title: "Quality Gate Pack",
-    description: "Custom checks, lint gate, and report nodes imported by user.",
-    nodeCount: 4,
-    tags: ["quality", "lint", "report"],
-    updatedAt: "2026-04-12T09:20:00Z"
-  },
-  {
-    id: "imported-ops-alert",
-    title: "Ops Alert Pack",
-    description: "Alert routing and escalation nodes imported from local archive.",
-    nodeCount: 3,
-    tags: ["ops", "alert", "escalation"],
-    updatedAt: "2026-04-09T03:00:00Z"
-  }
-];
-
-function readUserImportedNodePacks() {
-  if (typeof window === "undefined") return DEFAULT_IMPORTED_NODE_PACKS;
-
-  try {
-    const raw = window.localStorage.getItem(USER_NODE_LIBRARY_KEY);
-    if (!raw) return DEFAULT_IMPORTED_NODE_PACKS;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_IMPORTED_NODE_PACKS;
-
-    return parsed.map((item, index) => ({
-      id: String(item.id ?? `imported-${index + 1}`),
-      title: String(item.title ?? "Imported Pack"),
-      description: String(item.description ?? ""),
-      nodeCount: Number(item.nodeCount ?? 0),
-      tags: Array.isArray(item.tags) ? item.tags.map((tag) => String(tag)) : [],
-      updatedAt: item.updatedAt ? new Date(item.updatedAt).toISOString() : new Date().toISOString()
-    }));
-  } catch {
-    return DEFAULT_IMPORTED_NODE_PACKS;
-  }
-}
-
 const EDGE_LABEL = { default: "next", true: "true", false: "false", loop: "loop", exit: "exit" };
 
 const INITIAL_GRAPH = {
@@ -1044,7 +1001,6 @@ export {
   EDGE_LABEL,
   INITIAL_GRAPH,
   DRAG_GRID,
-  readUserImportedNodePacks,
   normalizeSkillMetadata,
   sanitizeNodeColor,
   normalizeItemType,

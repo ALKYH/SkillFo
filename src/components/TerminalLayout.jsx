@@ -124,7 +124,7 @@ function TerminalLayout({ theme, onThemeChange, locale, onLocaleChange }) {
   const [hotTemplates, setHotTemplates] = useState([]);
   const [hotTemplatesLoading, setHotTemplatesLoading] = useState(true);
   const [hotTemplatesError, setHotTemplatesError] = useState("");
-  const [hotBackend, setHotBackend] = useState("mock");
+  const [hotBackend, setHotBackend] = useState("remote");
 
   const isWorkspaceRoute = location.pathname === "/workspace";
   const isHomeRoute = location.pathname === "/";
@@ -183,10 +183,11 @@ function TerminalLayout({ theme, onThemeChange, locale, onLocaleChange }) {
         );
 
         setHotTemplates(result.items ?? []);
-        setHotBackend(result.backend ?? "mock");
+        setHotBackend(result.backend ?? "remote");
       } catch (error) {
         if (error.name === "AbortError") return;
         setHotTemplates([]);
+        setHotBackend("unavailable");
         setHotTemplatesError(error.message || "Failed to load templates.");
       } finally {
         setHotTemplatesLoading(false);
@@ -375,7 +376,7 @@ function TerminalLayout({ theme, onThemeChange, locale, onLocaleChange }) {
                         <span className="terminal-pane-head-meta">
                           {hotBackend === "remote"
                             ? text("backend: remote", "backend: remote")
-                            : text("backend: mock", "backend: mock")}
+                            : text("backend: unavailable", "backend: unavailable")}
                         </span>
                       </header>
                       <div className="terminal-pane-body top-pane">

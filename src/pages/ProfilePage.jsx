@@ -98,7 +98,7 @@ function ProfilePage() {
     const source =
       backend === "remote"
         ? t("profile.backend.remote")
-        : t("profile.backend.mock");
+        : t("profile.backend.unavailable");
     return `${t("profile.backend.label")}: ${source}`;
   }, [backend, t]);
 

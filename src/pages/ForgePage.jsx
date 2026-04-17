@@ -82,7 +82,11 @@ function ForgePage() {
     total: 0,
     totalPages: 1
   });
-  const [backend, setBackend] = useState("mock");
+  const [backend, setBackend] = useState("remote");
+  const [workshop, setWorkshop] = useState({
+    skillfoTemplates: { document: "SKILLFO.md", total: 0, categories: [] },
+    presetNodeLibraries: { document: "Preset Node Library", total: 0, categories: [] }
+  });
   const [lastSync, setLastSync] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
@@ -129,10 +133,17 @@ function ForgePage() {
             totalPages: 1
           }
         );
-        setBackend(result.backend ?? "mock");
+        setBackend(result.backend ?? "remote");
+        setWorkshop(
+          result.workshop ?? {
+            skillfoTemplates: { document: "SKILLFO.md", total: 0, categories: [] },
+            presetNodeLibraries: { document: "Preset Node Library", total: 0, categories: [] }
+          }
+        );
         setLastSync(result.lastSync ?? null);
       } catch (fetchError) {
         if (fetchError.name === "AbortError") return;
+        setBackend("unavailable");
         setError(fetchError.message || t("forgePage.errors.loadFailed"));
       } finally {
         setIsLoading(false);
@@ -290,6 +301,8 @@ function ForgePage() {
   );
 
   const topTags = (facets.tags ?? []).slice(0, 16);
+  const topSkillfoFunctions = (workshop.skillfoTemplates?.categories ?? []).slice(0, 4);
+  const topNodeLibraryFunctions = (workshop.presetNodeLibraries?.categories ?? []).slice(0, 4);
 
   return (
     <article className="page forge-page">
@@ -315,7 +328,7 @@ function ForgePage() {
           <span className="forge-status-pill">
             {backend === "remote"
               ? t("forgePage.backend.connected")
-              : t("forgePage.backend.mock")}
+              : t("forgePage.backend.unavailable")}
           </span>
           <span className="forge-status-pill">
             {t("forgePage.results")}: {pagination.total}
@@ -328,6 +341,30 @@ function ForgePage() {
               {t("forgePage.sync")}: {formatDateTime(new Date(lastSync))}
             </span>
           )}
+        </div>
+
+        <div className="forge-meta-row">
+          <span className="forge-status-pill">
+            {t("forgePage.workshop.skillfoTemplates")}:{" "}
+            {workshop.skillfoTemplates?.total ?? 0}
+          </span>
+          <span className="forge-status-pill">
+            {t("forgePage.workshop.presetNodeLibraries")}:{" "}
+            {workshop.presetNodeLibraries?.total ?? 0}
+          </span>
+        </div>
+
+        <div className="forge-tag-wrap">
+          {topSkillfoFunctions.map((entry) => (
+            <span key={`skillfo-${entry.value}`} className="forge-status-pill">
+              {t("forgePage.workshop.skillfoByFunction")} {entry.value} ({entry.count})
+            </span>
+          ))}
+          {topNodeLibraryFunctions.map((entry) => (
+            <span key={`node-lib-${entry.value}`} className="forge-status-pill">
+              {t("forgePage.workshop.nodeLibraryByFunction")} {entry.value} ({entry.count})
+            </span>
+          ))}
         </div>
       </section>
 
@@ -489,6 +526,8 @@ function ForgePage() {
               <div className="forge-metrics">
                 <span>{t("forgePage.metrics.author")}: {item.author}</span>
                 <span>{t("forgePage.metrics.category")}: {item.category}</span>
+                <span>{t("forgePage.metrics.functionFocus")}: {item.functionFocus}</span>
+                <span>{t("forgePage.metrics.deliverable")}: {item.deliverable}</span>
                 <span>{t("forgePage.metrics.complexity")}: {item.complexity}</span>
                 <span>{t("forgePage.metrics.nodes")}: {item.nodeCount}</span>
                 <span>{t("forgePage.metrics.likes")}: {item.likes}</span>
