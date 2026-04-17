@@ -29,6 +29,7 @@ import {
   clampItemTableSize,
   normalizeTableDataShape,
   normalizeTableItemPayload,
+  normalizeIfElseItemPayload,
   createNodeItem,
   normalizeNodeParams,
   cloneNodeParams,
@@ -37,6 +38,10 @@ import {
   num,
   nodeId,
   edgeId,
+  getEdgeSourcePort,
+  buildReferenceEscapeToken,
+  collectNodeReferenceOutputIndexes,
+  getNextReferenceOutputIndex,
   enforceSingleOutgoingEdges,
   buildEdgeCurvePath,
   folderId,
@@ -45,6 +50,7 @@ import {
   indent,
   generateSkillMarkdown,
   generateSkillfoMarkdown,
+  parseSkillfoMarkdown,
   isEditableElement,
   snapToGrid
 } from "../modules/nodeEditor/nodeEditorModule";
@@ -58,6 +64,51 @@ import {
   handleRawEditorKeyDown as handleRawEditorKeyDownInEditor,
   applyRenderedBlockEdit as applyRenderedBlockEditInEditor
 } from "../modules/textEditor/textEditorModule";
+
+const NODE_BASE_OUTPUT_Y = NODE_H * 0.5;
+const REFERENCE_PORT_START_Y = NODE_H + 18;
+const REFERENCE_PORT_STEP = 20;
+const REFERENCE_PORT_BOTTOM_PADDING = 20;
+const LINK_LAYER_MIN_W = 1240;
+const LINK_LAYER_MIN_H = 680;
+const LINK_LAYER_PADDING = 220;
+const CANVAS_WORLD_OFFSET_X = 620;
+const CANVAS_WORLD_OFFSET_Y = 360;
+const CANVAS_ZOOM_MIN = 0.5;
+const CANVAS_ZOOM_MAX = 2.2;
+const CANVAS_ZOOM_STEP = 0.1;
+const CANVAS_NODE_BOUNDS = Object.freeze({
+  left: -560,
+  top: -320,
+  right: 5200,
+  bottom: 3600
+});
+
+function clampNumber(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+function getNodeOutputPortOffset(sourcePort) {
+  const port = getEdgeSourcePort({ sourcePort });
+  if (port <= 0) return NODE_BASE_OUTPUT_Y;
+  return REFERENCE_PORT_START_Y + (port - 1) * REFERENCE_PORT_STEP;
+}
+
+function getNodeVisualHeightByPortIndexes(referenceOutputPorts = []) {
+  const maxPort = (Array.isArray(referenceOutputPorts) ? referenceOutputPorts : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0)
+    .reduce((max, value) => Math.max(max, value), 0);
+  const requiredBottom = getNodeOutputPortOffset(maxPort) + REFERENCE_PORT_BOTTOM_PADDING;
+  return Math.max(NODE_H, Math.ceil(requiredBottom));
+}
+
+function getNodeVisualHeightFromNode(node) {
+  return getNodeVisualHeightByPortIndexes(collectNodeReferenceOutputIndexes(node));
+}
 
 function WorkspacePage() {
   const { locale, t: i18nT } = useI18n();
@@ -83,6 +134,8 @@ function WorkspacePage() {
   const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [dragState, setDragState] = useState(null);
   const [connectionDragState, setConnectionDragState] = useState(null);
+  const [canvasPanState, setCanvasPanState] = useState(null);
+  const [canvasZoom, setCanvasZoom] = useState(1);
   const [copied, setCopied] = useState(false);
   const [leftSidebarTab, setLeftSidebarTab] = useState("library");
   const [isLeftSidebarCollapsed, setIsLeftSidebarCollapsed] = useState(false);
@@ -102,10 +155,16 @@ function WorkspacePage() {
   const [skillMarkdown, setSkillMarkdown] = useState("");
   const [activeMarkdownBlockId, setActiveMarkdownBlockId] = useState(null);
   const clipboardRef = useRef(null);
+  const skillfoImportInputRef = useRef(null);
   const canvasRef = useRef(null);
+  const canvasZoomRef = useRef(canvasZoom);
+  const wheelZoomRafRef = useRef(null);
+  const wheelZoomDeltaRef = useRef(0);
+  const wheelZoomAnchorRef = useRef(null);
   const markdownPaneRef = useRef(null);
   const markdownBlockRefs = useRef(new Map());
   const markdownTextareaRef = useRef(null);
+  const itemContentTextareaRefs = useRef(new Map());
   const didNodeDragMoveRef = useRef(false);
   const suppressNodeClickRef = useRef(false);
 
@@ -246,6 +305,37 @@ function WorkspacePage() {
     return map;
   }, [graph.nodes]);
 
+  const nodeReferencePortMap = useMemo(() => {
+    const map = new Map();
+    graph.nodes.forEach((node) => {
+      map.set(node.id, collectNodeReferenceOutputIndexes(node));
+    });
+    return map;
+  }, [graph.nodes]);
+
+  const nodeHeightMap = useMemo(() => {
+    const map = new Map();
+    graph.nodes.forEach((node) => {
+      const referencePorts = nodeReferencePortMap.get(node.id) ?? [];
+      map.set(node.id, getNodeVisualHeightByPortIndexes(referencePorts));
+    });
+    return map;
+  }, [graph.nodes, nodeReferencePortMap]);
+
+  const nodeHeightById = (nodeId) => nodeHeightMap.get(nodeId) ?? NODE_H;
+  const canvasZoomPercent = Math.round(canvasZoom * 100);
+  const zoomLabel = `${canvasZoomPercent}%`;
+
+  const toCanvasX = (value) => num(value, 0) + CANVAS_WORLD_OFFSET_X;
+  const toCanvasY = (value) => num(value, 0) + CANVAS_WORLD_OFFSET_Y;
+
+  const boundaryFrameRect = {
+    left: toCanvasX(CANVAS_NODE_BOUNDS.left),
+    top: toCanvasY(CANVAS_NODE_BOUNDS.top),
+    right: toCanvasX(CANVAS_NODE_BOUNDS.right),
+    bottom: toCanvasY(CANVAS_NODE_BOUNDS.bottom)
+  };
+
   const edgePaths = useMemo(
     () =>
       graph.edges
@@ -253,12 +343,17 @@ function WorkspacePage() {
           const from = nodeMap.get(edge.from);
           const to = nodeMap.get(edge.to);
           if (!from || !to) return null;
-          const x1 = from.x + NODE_W;
-          const y1 = from.y + NODE_H * 0.5;
-          const x2 = to.x;
-          const y2 = to.y + NODE_H * 0.5;
+          const sourcePort = getEdgeSourcePort(edge);
+          const x1 = toCanvasX(from.x + NODE_W);
+          const y1 = toCanvasY(from.y + getNodeOutputPortOffset(sourcePort));
+          const x2 = toCanvasX(to.x);
+          const y2 = toCanvasY(to.y + NODE_BASE_OUTPUT_Y);
+          const edgeKindLabel = EDGE_LABEL[edge.kind] ?? edge.kind ?? "default";
+          const label = sourcePort > 0 ? `@${sourcePort} ${edgeKindLabel}` : edgeKindLabel;
           return {
             ...edge,
+            sourcePort,
+            label,
             d: buildEdgeCurvePath(x1, y1, x2, y2),
             lx: (x1 + x2) * 0.5,
             ly: (y1 + y2) * 0.5 - 8
@@ -267,6 +362,34 @@ function WorkspacePage() {
         .filter(Boolean),
     [graph.edges, nodeMap]
   );
+
+  const linkLayerBounds = useMemo(() => {
+    let maxX = Math.max(LINK_LAYER_MIN_W, boundaryFrameRect.right + LINK_LAYER_PADDING);
+    let maxY = Math.max(LINK_LAYER_MIN_H, boundaryFrameRect.bottom + LINK_LAYER_PADDING);
+
+    graph.nodes.forEach((node) => {
+      const nodeHeight = nodeHeightById(node.id);
+      maxX = Math.max(maxX, toCanvasX(Number(node.x) + NODE_W) + LINK_LAYER_PADDING);
+      maxY = Math.max(maxY, toCanvasY(Number(node.y) + nodeHeight) + LINK_LAYER_PADDING);
+    });
+
+    graph.folders.forEach((folder) => {
+      const width = Number(folder.width) || 0;
+      const height = Number(folder.height) || 0;
+      maxX = Math.max(maxX, toCanvasX(Number(folder.x) + width) + LINK_LAYER_PADDING);
+      maxY = Math.max(maxY, toCanvasY(Number(folder.y) + height) + LINK_LAYER_PADDING);
+    });
+
+    if (connectionDragState?.currentPoint) {
+      maxX = Math.max(maxX, toCanvasX(Number(connectionDragState.currentPoint.x)) + LINK_LAYER_PADDING);
+      maxY = Math.max(maxY, toCanvasY(Number(connectionDragState.currentPoint.y)) + LINK_LAYER_PADDING);
+    }
+
+    return {
+      width: Math.max(LINK_LAYER_MIN_W, Math.ceil(maxX)),
+      height: Math.max(LINK_LAYER_MIN_H, Math.ceil(maxY))
+    };
+  }, [boundaryFrameRect.bottom, boundaryFrameRect.right, connectionDragState, graph.folders, graph.nodes, nodeHeightMap]);
 
   const connectionPreviewPath = useMemo(() => {
     if (!connectionDragState) return null;
@@ -280,21 +403,29 @@ function WorkspacePage() {
     let x1 = connectionDragState.currentPoint.x;
     let y1 = connectionDragState.currentPoint.y;
     let x2 = sourceNode.x;
-    let y2 = sourceNode.y + NODE_H * 0.5;
+    let y2 = sourceNode.y + NODE_BASE_OUTPUT_Y;
 
     if (connectionDragState.direction === "out") {
+      const sourcePort = getEdgeSourcePort(connectionDragState);
       x1 = sourceNode.x + NODE_W;
-      y1 = sourceNode.y + NODE_H * 0.5;
+      y1 = sourceNode.y + getNodeOutputPortOffset(sourcePort);
       x2 = hoverNode ? hoverNode.x : connectionDragState.currentPoint.x;
-      y2 = hoverNode ? hoverNode.y + NODE_H * 0.5 : connectionDragState.currentPoint.y;
+      y2 = hoverNode ? hoverNode.y + NODE_BASE_OUTPUT_Y : connectionDragState.currentPoint.y;
     } else {
       x1 = hoverNode ? hoverNode.x + NODE_W : connectionDragState.currentPoint.x;
-      y1 = hoverNode ? hoverNode.y + NODE_H * 0.5 : connectionDragState.currentPoint.y;
+      y1 = hoverNode ? hoverNode.y + NODE_BASE_OUTPUT_Y : connectionDragState.currentPoint.y;
       x2 = sourceNode.x;
-      y2 = sourceNode.y + NODE_H * 0.5;
+      y2 = sourceNode.y + NODE_BASE_OUTPUT_Y;
     }
 
-    return { d: buildEdgeCurvePath(x1, y1, x2, y2) };
+    return {
+      d: buildEdgeCurvePath(
+        toCanvasX(x1),
+        toCanvasY(y1),
+        toCanvasX(x2),
+        toCanvasY(y2)
+      )
+    };
   }, [connectionDragState, nodeMap]);
 
   const generatedSkillMarkdown = useMemo(() => generateSkillMarkdown(graph, isZh), [graph, isZh]);
@@ -309,17 +440,65 @@ function WorkspacePage() {
           isModuleColorMappingOn,
           vimSubMode,
           activeDoc,
-          selectedNodeCount: effectiveSelectedNodeIds.length
+          selectedNodeIds: effectiveSelectedNodeIds,
+          selectedNodeId: graph.selectedNodeId,
+          selectedFolderId: graph.selectedFolderId,
+          skillMarkdown
         },
         isZh
       ),
-    [activeDoc, effectiveSelectedNodeIds.length, graph, isDocMappingLive, isModuleColorMappingOn, isZh, markdownViewMode, viewMode, vimSubMode]
+    [
+      activeDoc,
+      effectiveSelectedNodeIds,
+      graph,
+      isDocMappingLive,
+      isModuleColorMappingOn,
+      isZh,
+      markdownViewMode,
+      skillMarkdown,
+      viewMode,
+      vimSubMode
+    ]
   );
   const activeDocumentName = activeDoc === "skillfo" ? "SKILLFO.md" : "SKILL.md";
   const currentMarkdown = activeDoc === "skillfo" ? generatedSkillfoMarkdown : skillMarkdown;
+  const markdownAssociationContext = useMemo(() => {
+    const byType = new Map();
+    graph.nodes.forEach((node) => {
+      const type = String(node?.type ?? "").trim();
+      if (!type) return;
+      if (!byType.has(type)) byType.set(type, new Set());
+      const label = String(node?.label ?? "").trim();
+      if (label) byType.get(type).add(label);
+    });
+
+    const entries = Array.from(byType.entries())
+      .map(([type, labels]) => ({
+        type,
+        labels: Array.from(labels).sort((a, b) => a.localeCompare(b))
+      }))
+      .sort((a, b) => a.type.localeCompare(b.type));
+
+    const headingAliases = entries
+      .map((entry) => ({
+        moduleId: entry.type,
+        keywords: entry.labels
+      }))
+      .filter((entry) => entry.keywords.length > 0);
+
+    const seed = entries
+      .map((entry) => `${entry.type}::${entry.labels.join("||")}`)
+      .join("###");
+
+    return { headingAliases, seed };
+  }, [graph.nodes]);
+
   const markdownAssociationConfig = useMemo(
-    () => buildMarkdownAssociationConfig(NODE_LIBRARY),
-    []
+    () =>
+      buildMarkdownAssociationConfig(NODE_LIBRARY, {
+        headingAliases: markdownAssociationContext.headingAliases
+      }),
+    [markdownAssociationContext.seed]
   );
   const markdownLines = currentMarkdown.split("\n").length;
   const markdownChars = currentMarkdown.length;
@@ -395,6 +574,10 @@ function WorkspacePage() {
     syncNodeSelectionFromRawEditor(textarea);
   }, [activeDoc, markdownViewMode, markdownBlocks, skillMarkdown]);
 
+  useEffect(() => {
+    canvasZoomRef.current = canvasZoom;
+  }, [canvasZoom]);
+
   const commitGraph = (updater) => {
     setGraph((previous) => {
       const baseline = cloneGraph(previous);
@@ -403,8 +586,9 @@ function WorkspacePage() {
       const constrained = Array.isArray(next.edges)
         ? { ...next, edges: enforceSingleOutgoingEdges(next.edges) }
         : next;
+      const bounded = constrainGraphNodes(constrained);
       setUndoStack((stack) => [...stack, baseline].slice(-80));
-      return constrained;
+      return bounded;
     });
   };
 
@@ -412,7 +596,7 @@ function WorkspacePage() {
     setUndoStack((stack) => {
       if (stack.length === 0) return stack;
       const snapshot = stack[stack.length - 1];
-      setGraph(cloneGraph(snapshot));
+      setGraph(constrainGraphNodes(cloneGraph(snapshot)));
       return stack.slice(0, -1);
     });
     setFolderToolArmed(false);
@@ -422,6 +606,7 @@ function WorkspacePage() {
     setNodeMarqueeStart(null);
     setDragState(null);
     setConnectionDragState(null);
+    setCanvasPanState(null);
     setSelectedNodeIds([]);
   };
 
@@ -640,16 +825,18 @@ function WorkspacePage() {
       .sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
 
     commitGraph((draft) => {
-      const edgeSet = new Set(draft.edges.map((edge) => `${edge.from}->${edge.to}`));
+      const edgeSet = new Set(
+        draft.edges.map((edge) => `${edge.from}:${getEdgeSourcePort(edge)}->${edge.to}`)
+      );
       const additions = [];
 
       for (let index = 0; index < ordered.length - 1; index += 1) {
         const from = ordered[index];
         const to = ordered[index + 1];
-        const key = `${from.id}->${to.id}`;
+        const key = `${from.id}:0->${to.id}`;
         if (edgeSet.has(key)) continue;
         edgeSet.add(key);
-        additions.push({ id: edgeId(), from: from.id, to: to.id, kind: "default" });
+        additions.push({ id: edgeId(), from: from.id, to: to.id, kind: "default", sourcePort: 0 });
       }
 
       if (!additions.length) return draft;
@@ -713,7 +900,7 @@ function WorkspacePage() {
         const left = Math.min(...members.map((node) => node.x));
         const top = Math.min(...members.map((node) => node.y));
         const right = Math.max(...members.map((node) => node.x + NODE_W));
-        const bottom = Math.max(...members.map((node) => node.y + NODE_H));
+        const bottom = Math.max(...members.map((node) => node.y + getNodeVisualHeightFromNode(node)));
         return { ...folder, x: left - 20, y: top - 20, width: right - left + 40, height: bottom - top + 40 };
       });
 
@@ -722,7 +909,7 @@ function WorkspacePage() {
   };
 
   const resetGraph = () => {
-    setGraph(cloneGraph(INITIAL_GRAPH));
+    setGraph(constrainGraphNodes(cloneGraph(INITIAL_GRAPH)));
     setUndoStack([]);
     setFolderToolArmed(false);
     setMarqueeRect(null);
@@ -731,6 +918,7 @@ function WorkspacePage() {
     setNodeMarqueeStart(null);
     setDragState(null);
     setConnectionDragState(null);
+    setCanvasPanState(null);
     setSelectedNodeIds([]);
     clipboardRef.current = null;
   };
@@ -870,6 +1058,30 @@ function WorkspacePage() {
     }));
   };
 
+  const updateSelectedReferenceNote = (portIndex, value) => {
+    if (!selectedNode) return;
+    const key = String(portIndex);
+    const nextValue = String(value ?? "");
+    commitGraph((draft) => ({
+      ...draft,
+      nodes: draft.nodes.map((node) => {
+        if (node.id !== draft.selectedNodeId) return node;
+        const definition = NODE_LIBRARY[node.type] ?? NODE_LIBRARY.workflow;
+        const normalized = normalizeNodeParams(node.params, definition);
+        const nextNotes = { ...(normalized.referenceNotes ?? {}) };
+        if (nextValue.trim()) {
+          nextNotes[key] = nextValue;
+        } else {
+          delete nextNotes[key];
+        }
+        return {
+          ...node,
+          params: normalizeNodeParams({ ...normalized, referenceNotes: nextNotes }, definition)
+        };
+      })
+    }));
+  };
+
   const updateSelectedItems = (updater) => {
     if (!selectedNode) return;
     commitGraph((draft) => ({
@@ -906,6 +1118,46 @@ function WorkspacePage() {
     updateSelectedItems((items) =>
       items.map((item) => (item.id === itemId ? { ...item, ...patch } : item))
     );
+  };
+
+  const setItemContentTextareaRef = (itemId, element) => {
+    if (element) {
+      itemContentTextareaRefs.current.set(itemId, element);
+      return;
+    }
+    itemContentTextareaRefs.current.delete(itemId);
+  };
+
+  const insertReferenceTokenForItem = (itemId) => {
+    if (!selectedNode) return;
+    const definition = NODE_LIBRARY[selectedNode.type] ?? NODE_LIBRARY.workflow;
+    const params = normalizeNodeParams(selectedNode.params, definition);
+    const targetItem = params.items.find((item) => item.id === itemId);
+    if (!targetItem) return;
+
+    const token = buildReferenceEscapeToken(getNextReferenceOutputIndex(params.items));
+    const original = String(targetItem.content ?? "");
+    const textarea = itemContentTextareaRefs.current.get(itemId);
+    const hasSelection =
+      textarea &&
+      typeof textarea.selectionStart === "number" &&
+      typeof textarea.selectionEnd === "number";
+
+    const selectionStart = hasSelection ? Math.max(0, Math.min(original.length, textarea.selectionStart)) : original.length;
+    const selectionEnd = hasSelection ? Math.max(selectionStart, Math.min(original.length, textarea.selectionEnd)) : selectionStart;
+    const needsSpace = !hasSelection && selectionStart > 0 && /\S$/.test(original.slice(0, selectionStart));
+    const inserted = `${needsSpace ? " " : ""}${token}`;
+    const nextContent = `${original.slice(0, selectionStart)}${inserted}${original.slice(selectionEnd)}`;
+    const nextCaret = selectionStart + inserted.length;
+
+    updateSelectedItem(itemId, { content: nextContent });
+
+    requestAnimationFrame(() => {
+      const target = itemContentTextareaRefs.current.get(itemId);
+      if (!target) return;
+      target.focus();
+      target.setSelectionRange(nextCaret, nextCaret);
+    });
   };
 
   const updateSelectedTableShape = (itemId, nextRows, nextCols) => {
@@ -983,6 +1235,13 @@ function WorkspacePage() {
             ...normalizeTableItemPayload(item)
           };
         }
+        if (normalizedType === "ifelse") {
+          return {
+            ...item,
+            type: normalizedType,
+            ...normalizeIfElseItemPayload(item)
+          };
+        }
         return { ...item, type: normalizedType };
       })
     );
@@ -1008,13 +1267,122 @@ function WorkspacePage() {
     }));
   };
 
+  const clampNodePosition = (node, nextX, nextY) => {
+    const nodeHeight = getNodeVisualHeightFromNode(node);
+    const maxX = CANVAS_NODE_BOUNDS.right - NODE_W;
+    const maxY = CANVAS_NODE_BOUNDS.bottom - nodeHeight;
+    return {
+      x: clampNumber(num(nextX, 0), CANVAS_NODE_BOUNDS.left, maxX),
+      y: clampNumber(num(nextY, 0), CANVAS_NODE_BOUNDS.top, maxY)
+    };
+  };
+
+  const constrainGraphNodes = (draftGraph) => {
+    const sourceNodes = Array.isArray(draftGraph?.nodes) ? draftGraph.nodes : [];
+    if (!sourceNodes.length) return draftGraph;
+
+    let changed = false;
+    const nodes = sourceNodes.map((node) => {
+      const bounded = clampNodePosition(node, node.x, node.y);
+      if (bounded.x === node.x && bounded.y === node.y) return node;
+      changed = true;
+      return { ...node, x: bounded.x, y: bounded.y };
+    });
+
+    if (!changed) return draftGraph;
+    return { ...draftGraph, nodes };
+  };
+
+  const clampZoom = (value) => clampNumber(value, CANVAS_ZOOM_MIN, CANVAS_ZOOM_MAX);
+
+  const applyCanvasZoom = (targetZoom, anchorClientPoint = null) => {
+    const nextZoom = clampZoom(targetZoom);
+    const currentZoom = canvasZoomRef.current;
+    if (nextZoom === currentZoom) return;
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const anchorViewportX =
+        anchorClientPoint && Number.isFinite(anchorClientPoint.clientX)
+          ? clampNumber(anchorClientPoint.clientX - rect.left, 0, canvas.clientWidth)
+          : canvas.clientWidth * 0.5;
+      const anchorViewportY =
+        anchorClientPoint && Number.isFinite(anchorClientPoint.clientY)
+          ? clampNumber(anchorClientPoint.clientY - rect.top, 0, canvas.clientHeight)
+          : canvas.clientHeight * 0.5;
+      const anchorScaledX = canvas.scrollLeft + anchorViewportX;
+      const anchorScaledY = canvas.scrollTop + anchorViewportY;
+      const logicalAnchorX = anchorScaledX / currentZoom;
+      const logicalAnchorY = anchorScaledY / currentZoom;
+
+      const nextScrollLeft = logicalAnchorX * nextZoom - anchorViewportX;
+      const nextScrollTop = logicalAnchorY * nextZoom - anchorViewportY;
+      canvas.scrollLeft = Math.max(0, nextScrollLeft);
+      canvas.scrollTop = Math.max(0, nextScrollTop);
+    }
+
+    canvasZoomRef.current = nextZoom;
+    setCanvasZoom(nextZoom);
+  };
+
+  const adjustCanvasZoom = (delta) => {
+    applyCanvasZoom(canvasZoomRef.current + delta);
+  };
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    const onWheelNative = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      let deltaY = event.deltaY;
+      if (!Number.isFinite(deltaY) || deltaY === 0) return;
+      if (event.deltaMode === 1) {
+        deltaY *= 16;
+      } else if (event.deltaMode === 2) {
+        deltaY *= canvas.clientHeight || 800;
+      }
+
+      wheelZoomDeltaRef.current += deltaY;
+      wheelZoomAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
+
+      if (wheelZoomRafRef.current !== null) return;
+      wheelZoomRafRef.current = requestAnimationFrame(() => {
+        wheelZoomRafRef.current = null;
+        const accumulatedDelta = wheelZoomDeltaRef.current;
+        wheelZoomDeltaRef.current = 0;
+        if (!accumulatedDelta) return;
+
+        const normalizedDelta = clampNumber(accumulatedDelta, -300, 300);
+        const zoomFactor = Math.exp(-normalizedDelta * 0.001);
+        const nextZoom = canvasZoomRef.current * zoomFactor;
+        applyCanvasZoom(nextZoom, wheelZoomAnchorRef.current);
+      });
+    };
+
+    canvas.addEventListener("wheel", onWheelNative, { passive: false });
+    return () => {
+      canvas.removeEventListener("wheel", onWheelNative);
+      if (wheelZoomRafRef.current !== null) {
+        cancelAnimationFrame(wheelZoomRafRef.current);
+        wheelZoomRafRef.current = null;
+      }
+      wheelZoomDeltaRef.current = 0;
+    };
+  }, []);
+
   const getCanvasPoint = (event) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
+    const scaledX = event.clientX - rect.left + canvas.scrollLeft;
+    const scaledY = event.clientY - rect.top + canvas.scrollTop;
     return {
-      x: event.clientX - rect.left + canvas.scrollLeft,
-      y: event.clientY - rect.top + canvas.scrollTop
+      x: scaledX / canvasZoom - CANVAS_WORLD_OFFSET_X,
+      y: scaledY / canvasZoom - CANVAS_WORLD_OFFSET_Y
     };
   };
 
@@ -1023,11 +1391,12 @@ function WorkspacePage() {
     for (let index = graph.nodes.length - 1; index >= 0; index -= 1) {
       const node = graph.nodes[index];
       if (!node || node.id === excludeNodeId) continue;
+      const nodeHeight = nodeHeightById(node.id);
       const inside =
         point.x >= node.x &&
         point.x <= node.x + NODE_W &&
         point.y >= node.y &&
-        point.y <= node.y + NODE_H;
+        point.y <= node.y + nodeHeight;
       if (inside) return node.id;
     }
     return null;
@@ -1043,7 +1412,7 @@ function WorkspacePage() {
           x: node.x,
           y: node.y,
           width: NODE_W,
-          height: NODE_H
+          height: nodeHeightById(node.id)
         })
       )
       .map((node) => node.id);
@@ -1060,7 +1429,7 @@ function WorkspacePage() {
       const left = Math.min(...members.map((node) => node.x));
       const top = Math.min(...members.map((node) => node.y));
       const right = Math.max(...members.map((node) => node.x + NODE_W));
-      const bottom = Math.max(...members.map((node) => node.y + NODE_H));
+      const bottom = Math.max(...members.map((node) => node.y + nodeHeightById(node.id)));
 
       const cleaned = draft.folders
         .map((folder) => ({
@@ -1125,7 +1494,7 @@ function WorkspacePage() {
     selectNodes([nodeId], nodeId);
   };
 
-  const onNodePortMouseDown = (event, nodeId, side) => {
+  const onNodePortMouseDown = (event, nodeId, side, sourcePort = 0) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1134,9 +1503,10 @@ function WorkspacePage() {
     if (!node) return;
 
     const direction = side === "left" ? "in" : "out";
+    const normalizedSourcePort = direction === "out" ? getEdgeSourcePort({ sourcePort }) : 0;
     const startPoint = direction === "out"
-      ? { x: node.x + NODE_W, y: node.y + NODE_H * 0.5 }
-      : { x: node.x, y: node.y + NODE_H * 0.5 };
+      ? { x: node.x + NODE_W, y: node.y + getNodeOutputPortOffset(normalizedSourcePort) }
+      : { x: node.x, y: node.y + NODE_BASE_OUTPUT_Y };
 
     setNodeMarqueeStart(null);
     setNodeMarqueeRect(null);
@@ -1146,6 +1516,7 @@ function WorkspacePage() {
     setConnectionDragState({
       nodeId,
       direction,
+      sourcePort: normalizedSourcePort,
       currentPoint: startPoint,
       hoverNodeId: null
     });
@@ -1179,7 +1550,27 @@ function WorkspacePage() {
   };
 
   const onCanvasDown = (event) => {
+    if (event.button === 1) {
+      event.preventDefault();
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      setConnectionDragState(null);
+      setDragState(null);
+      setMarqueeRect(null);
+      setMarqueeStart(null);
+      setNodeMarqueeRect(null);
+      setNodeMarqueeStart(null);
+      setCanvasPanState({
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startScrollLeft: canvas.scrollLeft,
+        startScrollTop: canvas.scrollTop
+      });
+      return;
+    }
+
     if (event.button !== 0) return;
+    setCanvasPanState(null);
     if (event.target.closest(".flow-node") || event.target.closest(".node-folder")) {
       return;
     }
@@ -1200,6 +1591,16 @@ function WorkspacePage() {
   };
 
   const onCanvasMove = (event) => {
+    if (canvasPanState) {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const dx = event.clientX - canvasPanState.startClientX;
+      const dy = event.clientY - canvasPanState.startClientY;
+      canvas.scrollLeft = canvasPanState.startScrollLeft - dx;
+      canvas.scrollTop = canvasPanState.startScrollTop - dy;
+      return;
+    }
+
     if (connectionDragState) {
       const point = getCanvasPoint(event);
       const hoverNodeId = getNodeIdAtCanvasPoint(point, connectionDragState.nodeId);
@@ -1231,10 +1632,15 @@ function WorkspacePage() {
         nodes: previous.nodes.map((node) => {
           const origin = moveMap.get(node.id);
           if (!origin) return node;
+          const bounded = clampNodePosition(
+            node,
+            snapToGrid(origin.x + deltaX),
+            snapToGrid(origin.y + deltaY)
+          );
           return {
             ...node,
-            x: snapToGrid(origin.x + deltaX),
-            y: snapToGrid(origin.y + deltaY)
+            x: bounded.x,
+            y: bounded.y
           };
         })
       }));
@@ -1254,6 +1660,11 @@ function WorkspacePage() {
   };
 
   const onCanvasUp = (event) => {
+    if (canvasPanState) {
+      setCanvasPanState(null);
+      return;
+    }
+
     if (connectionDragState) {
       const point = getCanvasPoint(event);
       const sourceId = connectionDragState.nodeId;
@@ -1264,14 +1675,22 @@ function WorkspacePage() {
 
       const fromId = connectionDragState.direction === "out" ? sourceId : targetId;
       const toId = connectionDragState.direction === "out" ? targetId : sourceId;
+      const sourcePort = connectionDragState.direction === "out"
+        ? getEdgeSourcePort(connectionDragState)
+        : 0;
       if (!fromId || !toId || fromId === toId) return;
 
       commitGraph((draft) => {
-        const exists = draft.edges.some((edge) => edge.from === fromId && edge.to === toId);
+        const exists = draft.edges.some(
+          (edge) =>
+            edge.from === fromId &&
+            edge.to === toId &&
+            getEdgeSourcePort(edge) === sourcePort
+        );
         if (exists) return draft;
         return {
           ...draft,
-          edges: [...draft.edges, { id: edgeId(), from: fromId, to: toId, kind: "default" }]
+          edges: [...draft.edges, { id: edgeId(), from: fromId, to: toId, kind: "default", sourcePort }]
         };
       });
       return;
@@ -1305,7 +1724,7 @@ function WorkspacePage() {
               x: node.x,
               y: node.y,
               width: NODE_W,
-              height: NODE_H
+              height: nodeHeightById(node.id)
             })
           )
           .map((node) => node.id);
@@ -1328,15 +1747,85 @@ function WorkspacePage() {
     }
   };
 
-  const exportSkillfoMarkdown = () => {
+  const exportMarkdownFile = (content, filename) => {
     if (typeof window === "undefined") return;
-    const blob = new Blob([generatedSkillfoMarkdown], { type: "text/markdown;charset=utf-8" });
+    const blob = new Blob([String(content ?? "")], { type: "text/markdown;charset=utf-8" });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "SKILLFO.md";
+    link.download = filename;
     link.click();
     window.URL.revokeObjectURL(url);
+  };
+
+  const exportSkillMarkdown = () => {
+    exportMarkdownFile(skillMarkdown, "SKILL.md");
+  };
+
+  const exportSkillfoMarkdown = () => {
+    exportMarkdownFile(generatedSkillfoMarkdown, "SKILLFO.md");
+  };
+
+  const openSkillfoImporter = () => {
+    skillfoImportInputRef.current?.click();
+  };
+
+  const applyImportedWorkspaceSnapshot = ({ graph: importedGraph, workspaceState, documents }) => {
+    const nextGraph = cloneGraph(importedGraph);
+    const nextState = workspaceState ?? {};
+    const nextDocuments = documents ?? {};
+    const importedSkillMarkdown = String(nextDocuments.skillMarkdown ?? "");
+    const importedIsDocMappingLive = Boolean(nextState.isDocMappingLive);
+
+    setUndoStack([]);
+    setGraph(constrainGraphNodes(nextGraph));
+    setViewMode(nextState.viewMode ?? "split");
+    setIsDocMappingLive(importedIsDocMappingLive);
+    setMarkdownViewMode(nextState.markdownViewMode ?? "raw");
+    setIsModuleColorMappingOn(
+      nextState.isModuleColorMappingOn === undefined ? true : Boolean(nextState.isModuleColorMappingOn)
+    );
+    setVimSubMode(nextState.vimSubMode ?? "normal");
+    setActiveDoc(nextState.activeDoc ?? "skill");
+    setSelectedNodeIds(Array.isArray(nextState.selectedNodeIds) ? nextState.selectedNodeIds : []);
+    setActiveMarkdownBlockId(null);
+    setFolderToolArmed(false);
+    setMarqueeRect(null);
+    setMarqueeStart(null);
+    setNodeMarqueeRect(null);
+    setNodeMarqueeStart(null);
+    setDragState(null);
+    setConnectionDragState(null);
+    setCanvasPanState(null);
+
+    if (importedIsDocMappingLive) {
+      setSkillMarkdown(generateSkillMarkdown(nextGraph, isZh));
+    } else {
+      setSkillMarkdown(importedSkillMarkdown || generateSkillMarkdown(nextGraph, isZh));
+    }
+  };
+
+  const importSkillfoMarkdown = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const parsed = parseSkillfoMarkdown(text);
+      applyImportedWorkspaceSnapshot(parsed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown parse error.";
+      if (typeof window !== "undefined") {
+        window.alert(
+          t(
+            `Import SKILLFO.md failed: ${message}`,
+            `Failed to import SKILLFO.md: ${message}`,
+            "workspacePage.toolbar.importSkillfoFailed"
+          )
+        );
+      }
+    }
   };
 
   const toggleDocMapping = () => {
@@ -1434,6 +1923,9 @@ function WorkspacePage() {
     ? normalizeNodeParams(selectedNode.params, selectedDefinition ?? NODE_LIBRARY.workflow)
     : null;
   const selectedNodeItems = selectedNodeParams?.items ?? [];
+  const selectedReferenceOutputPorts = selectedNode
+    ? (nodeReferencePortMap.get(selectedNode.id) ?? [])
+    : [];
   const skillMetadata = normalizeSkillMetadata(graph.metadata);
   const marquee = normalizeRect(marqueeRect);
   const nodeMarquee = normalizeRect(nodeMarqueeRect);
@@ -1503,10 +1995,58 @@ function WorkspacePage() {
           <button
             type="button"
             className="workspace-pill workspace-pill-btn"
+            onClick={exportSkillMarkdown}
+          >
+            {t("导出 SKILL.md", "Export SKILL.md", "workspacePage.toolbar.exportSkill")}
+          </button>
+          <button
+            type="button"
+            className="workspace-pill workspace-pill-btn"
             onClick={exportSkillfoMarkdown}
           >
             {t("导出 SKILLFO.md", "Export SKILLFO.md", "workspacePage.toolbar.exportSkillfo")}
           </button>
+          <button
+            type="button"
+            className="workspace-pill workspace-pill-btn"
+            onClick={openSkillfoImporter}
+          >
+            {t("导入 SKILLFO.md", "Import SKILLFO.md", "workspacePage.toolbar.importSkillfo")}
+          </button>
+          <input
+            ref={skillfoImportInputRef}
+            type="file"
+            accept=".md,text/markdown,text/plain"
+            style={{ display: "none" }}
+            onChange={importSkillfoMarkdown}
+          />
+          <div className="workspace-zoom-group">
+            <button
+              type="button"
+              className="workspace-pill workspace-pill-btn workspace-zoom-btn"
+              onClick={() => adjustCanvasZoom(-CANVAS_ZOOM_STEP)}
+              title={t("缩小视图", "Zoom out", "workspacePage.toolbar.zoomOut")}
+            >
+              -
+            </button>
+            <span className="workspace-pill">{t("缩放", "Zoom", "workspacePage.toolbar.zoom")}:{zoomLabel}</span>
+            <button
+              type="button"
+              className="workspace-pill workspace-pill-btn workspace-zoom-btn"
+              onClick={() => adjustCanvasZoom(CANVAS_ZOOM_STEP)}
+              title={t("放大视图", "Zoom in", "workspacePage.toolbar.zoomIn")}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              className="workspace-pill workspace-pill-btn workspace-zoom-btn"
+              onClick={() => applyCanvasZoom(1)}
+              title={t("重置缩放", "Reset zoom", "workspacePage.toolbar.zoomReset")}
+            >
+              1:1
+            </button>
+          </div>
           <span className="workspace-pill">{activeDocumentName}</span>
           <button
             type="button"
@@ -1810,13 +2350,41 @@ function WorkspacePage() {
 
               <div className="node-stage">
                 <div
-                  className={`node-canvas${folderToolArmed ? " is-folder-armed" : ""}${dragState ? " is-dragging" : ""}${connectionDragState ? " is-connecting" : ""}`}
+                  className={`node-canvas${folderToolArmed ? " is-folder-armed" : ""}${dragState ? " is-dragging" : ""}${connectionDragState ? " is-connecting" : ""}${canvasPanState ? " is-panning" : ""}`}
                   ref={canvasRef}
                   onMouseDown={onCanvasDown}
                   onMouseMove={onCanvasMove}
                   onMouseUp={onCanvasUp}
                   onMouseLeave={onCanvasUp}
                 >
+                  <div
+                    className="node-canvas-world"
+                    style={{
+                      width: `${Math.ceil(linkLayerBounds.width * canvasZoom)}px`,
+                      height: `${Math.ceil(linkLayerBounds.height * canvasZoom)}px`
+                    }}
+                  >
+                    <div
+                      className="node-canvas-content"
+                      style={{
+                        width: `${linkLayerBounds.width}px`,
+                        height: `${linkLayerBounds.height}px`,
+                        transform: `scale(${canvasZoom})`
+                      }}
+                    >
+                      <div
+                        className="node-boundary"
+                        style={{
+                          left: `${boundaryFrameRect.left}px`,
+                          top: `${boundaryFrameRect.top}px`,
+                          width: `${boundaryFrameRect.right - boundaryFrameRect.left}px`,
+                          height: `${boundaryFrameRect.bottom - boundaryFrameRect.top}px`
+                        }}
+                      >
+                        <span className="node-boundary-label">
+                          {t("可编辑边界", "Editable Boundary", "workspacePage.canvas.editableBoundary")}
+                        </span>
+                      </div>
                   {graph.folders.map((folder) => (
                     <article
                       className={`node-folder tone-${folder.tone}${graph.selectedFolderId === folder.id ? " is-selected" : ""}`}
@@ -1827,8 +2395,8 @@ function WorkspacePage() {
                         setGraph((previous) => ({ ...previous, selectedNodeId: null, selectedFolderId: folder.id }));
                       }}
                       style={{
-                        left: `${folder.x}px`,
-                        top: `${folder.y}px`,
+                        left: `${toCanvasX(folder.x)}px`,
+                        top: `${toCanvasY(folder.y)}px`,
                         width: `${folder.width}px`,
                         height: `${folder.height}px`
                       }}
@@ -1837,7 +2405,16 @@ function WorkspacePage() {
                     </article>
                   ))}
 
-                  <svg className="node-links" viewBox="0 0 1240 680" preserveAspectRatio="none" aria-hidden="true">
+                  <svg
+                    className="node-links"
+                    viewBox={`0 0 ${linkLayerBounds.width} ${linkLayerBounds.height}`}
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                    style={{
+                      width: `${linkLayerBounds.width}px`,
+                      height: `${linkLayerBounds.height}px`
+                    }}
+                  >
                     <defs>
                       <marker id="node-arrow" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
                         <polygon points="0 0, 12 4, 0 8" />
@@ -1846,7 +2423,7 @@ function WorkspacePage() {
                     {edgePaths.map((edge) => (
                       <g key={edge.id}>
                         <path className={`node-link node-link-${edge.kind}`} d={edge.d} />
-                        <text x={edge.lx} y={edge.ly} className="node-link-label">{EDGE_LABEL[edge.kind] ?? edge.kind}</text>
+                        <text x={edge.lx} y={edge.ly} className="node-link-label">{edge.label}</text>
                       </g>
                     ))}
                     {connectionPreviewPath && (
@@ -1860,13 +2437,19 @@ function WorkspacePage() {
                     const definition = NODE_LIBRARY[node.type] ?? NODE_LIBRARY.workflow;
                     const params = normalizeNodeParams(node.params, definition);
                     const appliedItems = params.items.filter((item) => item.applied !== false).length;
+                    const referenceOutputPorts = nodeReferencePortMap.get(node.id) ?? [];
+                    const referenceNotes = params.referenceNotes ?? {};
+                    const nodeHeight = nodeHeightById(node.id);
                     const isNodeSelected = effectiveSelectedNodeIds.includes(node.id);
                     const isNodeDocLinked = relatedMarkdownNodeIdSet.has(node.id);
                     const isConnectionTarget = connectionDragState?.hoverNodeId === node.id;
                     const isLeftPortActive =
                       connectionDragState?.nodeId === node.id && connectionDragState.direction === "in";
-                    const isRightPortActive =
-                      connectionDragState?.nodeId === node.id && connectionDragState.direction === "out";
+                    const activeOutputPort =
+                      connectionDragState?.nodeId === node.id && connectionDragState.direction === "out"
+                        ? getEdgeSourcePort(connectionDragState)
+                        : null;
+                    const isRightPortActive = activeOutputPort === 0;
                     return (
                       <article
                         className={`flow-node${isNodeSelected ? " is-selected" : ""}${isNodeDocLinked ? " is-doc-linked" : ""}${isConnectionTarget ? " is-connect-target" : ""}`}
@@ -1874,8 +2457,9 @@ function WorkspacePage() {
                         onClick={(event) => onNodeClick(event, node.id)}
                         onMouseDown={(event) => onNodeMouseDown(event, node.id)}
                         style={{
-                          left: `${node.x}px`,
-                          top: `${node.y}px`,
+                          left: `${toCanvasX(node.x)}px`,
+                          top: `${toCanvasY(node.y)}px`,
+                          height: `${nodeHeight}px`,
                           "--node-color": sanitizeNodeColor(params.color, definition.color ?? DEFAULT_NODE_COLOR)
                         }}
                       >
@@ -1884,14 +2468,41 @@ function WorkspacePage() {
                         <p>{pick(definition.title, isZh)} · {appliedItems}/{params.items.length}</p>
                         <span
                           className={`flow-node-port${isLeftPortActive ? " is-active" : ""}`}
+                          style={{ top: `${NODE_BASE_OUTPUT_Y}px` }}
                           onMouseDown={(event) => onNodePortMouseDown(event, node.id, "left")}
                           onClick={(event) => event.stopPropagation()}
                         />
                         <span
                           className={`flow-node-port is-right${isRightPortActive ? " is-active" : ""}`}
-                          onMouseDown={(event) => onNodePortMouseDown(event, node.id, "right")}
+                          style={{ top: `${NODE_BASE_OUTPUT_Y}px` }}
+                          onMouseDown={(event) => onNodePortMouseDown(event, node.id, "right", 0)}
                           onClick={(event) => event.stopPropagation()}
                         />
+                        {referenceOutputPorts.map((portIndex) => (
+                          <div
+                            key={`${node.id}-ref-port-${portIndex}`}
+                            className="flow-node-ref-port-wrap"
+                            style={{ top: `${getNodeOutputPortOffset(portIndex)}px` }}
+                            title={t(
+                              `引用出口 ${portIndex}`,
+                              `Reference output ${portIndex}`,
+                              "workspacePage.canvas.referenceOutput"
+                            )}
+                          >
+                            <span className="flow-node-ref-port-text">
+                              {String(referenceNotes[String(portIndex)] ?? "").trim() || buildReferenceEscapeToken(portIndex)}
+                            </span>
+                            <span
+                              className={`flow-node-port flow-node-ref-port is-right${
+                                activeOutputPort === portIndex ? " is-active" : ""
+                              }`}
+                              onMouseDown={(event) => onNodePortMouseDown(event, node.id, "right", portIndex)}
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <span>{portIndex}</span>
+                            </span>
+                          </div>
+                        ))}
                       </article>
                     );
                   })}
@@ -1900,8 +2511,8 @@ function WorkspacePage() {
                     <div
                       className="folder-marquee"
                       style={{
-                        left: `${marquee.left}px`,
-                        top: `${marquee.top}px`,
+                        left: `${toCanvasX(marquee.left)}px`,
+                        top: `${toCanvasY(marquee.top)}px`,
                         width: `${marquee.right - marquee.left}px`,
                         height: `${marquee.bottom - marquee.top}px`
                       }}
@@ -1912,13 +2523,15 @@ function WorkspacePage() {
                     <div
                       className="node-select-marquee"
                       style={{
-                        left: `${nodeMarquee.left}px`,
-                        top: `${nodeMarquee.top}px`,
+                        left: `${toCanvasX(nodeMarquee.left)}px`,
+                        top: `${toCanvasY(nodeMarquee.top)}px`,
                         width: `${nodeMarquee.right - nodeMarquee.left}px`,
                         height: `${nodeMarquee.bottom - nodeMarquee.top}px`
                       }}
                     />
                   )}
+                    </div>
+                  </div>
                 </div>
 
                 <aside className={`node-sidebar${(selectedNode || selectedFolder) && !dragState ? " is-open" : ""}`}>
@@ -2005,6 +2618,32 @@ function WorkspacePage() {
                           onChange={(event) => updateSelectedParam("summary", event.target.value)}
                         />
                       </label>
+                      <label className="node-bool-row">
+                        <span>{t("纯引用节点", "Pure Reference Node", "workspacePage.properties.referenceOnly")}</span>
+                        <input
+                          type="checkbox"
+                          checked={selectedNodeParams?.referenceOnly === true}
+                          onChange={(event) => updateSelectedParam("referenceOnly", event.target.checked)}
+                        />
+                      </label>
+                      {selectedReferenceOutputPorts.length > 0 && (
+                        <section className="node-ref-notes-section">
+                          <p>{t("引用出口注释", "Reference Output Notes", "workspacePage.properties.referenceNotes")}</p>
+                          <div className="node-ref-notes-grid">
+                            {selectedReferenceOutputPorts.map((portIndex) => (
+                              <label key={`selected-ref-note-${portIndex}`}>
+                                <span>{buildReferenceEscapeToken(portIndex)}</span>
+                                <input
+                                  type="text"
+                                  value={selectedNodeParams?.referenceNotes?.[String(portIndex)] ?? ""}
+                                  onChange={(event) => updateSelectedReferenceNote(portIndex, event.target.value)}
+                                  placeholder={t("显示注释", "Display note", "workspacePage.properties.referenceNotePlaceholder")}
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </section>
+                      )}
                       <div className="node-position-grid">
                         <label>
                           <span>{t("X", "X", "workspacePage.properties.positionX")}</span>
@@ -2036,6 +2675,7 @@ function WorkspacePage() {
                           {selectedNodeItems.map((item, index) => {
                             const itemType = normalizeItemType(item.type);
                             const tableModel = itemType === "table" ? normalizeTableItemPayload(item) : null;
+                            const ifElseModel = itemType === "ifelse" ? normalizeIfElseItemPayload(item) : null;
                             const codeLanguage = normalizeLang(item.language ?? item.lang ?? "text");
 
                             return (
@@ -2070,9 +2710,17 @@ function WorkspacePage() {
                                           ))}
                                         </select>
                                       </label>
-                                      <label>
+                                      <label className="node-item-content-shell">
                                         <span>{t("代码内容", "Code", "workspacePage.properties.itemCodeContent")}</span>
+                                        <button
+                                          type="button"
+                                          className="node-item-ref-btn"
+                                          onClick={() => insertReferenceTokenForItem(item.id)}
+                                        >
+                                          {t("引用", "Quote", "workspacePage.properties.itemInsertReference")}
+                                        </button>
                                         <textarea
+                                          ref={(element) => setItemContentTextareaRef(item.id, element)}
                                           className="node-item-code-input"
                                           value={item.content}
                                           onChange={(event) =>
@@ -2144,10 +2792,69 @@ function WorkspacePage() {
                                         </table>
                                       </div>
                                     </>
+                                  ) : itemType === "ifelse" && ifElseModel ? (
+                                    <>
+                                      <label>
+                                        <span>{t("条件", "Condition", "workspacePage.properties.itemIfElseCondition")}</span>
+                                        <input
+                                          type="text"
+                                          value={ifElseModel.ifCondition}
+                                          onChange={(event) => {
+                                            const payload = normalizeIfElseItemPayload({
+                                              ...item,
+                                              ifCondition: event.target.value,
+                                              ifThen: ifElseModel.ifThen,
+                                              ifElse: ifElseModel.ifElse
+                                            });
+                                            updateSelectedItem(item.id, payload);
+                                          }}
+                                        />
+                                      </label>
+                                      <div className="node-item-ifelse-grid">
+                                        <label>
+                                          <span>{t("成立分支", "THEN Branch", "workspacePage.properties.itemIfElseThen")}</span>
+                                          <textarea
+                                            value={ifElseModel.ifThen}
+                                            onChange={(event) => {
+                                              const payload = normalizeIfElseItemPayload({
+                                                ...item,
+                                                ifCondition: ifElseModel.ifCondition,
+                                                ifThen: event.target.value,
+                                                ifElse: ifElseModel.ifElse
+                                              });
+                                              updateSelectedItem(item.id, payload);
+                                            }}
+                                          />
+                                        </label>
+                                        <label>
+                                          <span>{t("不成立分支", "ELSE Branch", "workspacePage.properties.itemIfElseElse")}</span>
+                                          <textarea
+                                            value={ifElseModel.ifElse}
+                                            onChange={(event) => {
+                                              const payload = normalizeIfElseItemPayload({
+                                                ...item,
+                                                ifCondition: ifElseModel.ifCondition,
+                                                ifThen: ifElseModel.ifThen,
+                                                ifElse: event.target.value
+                                              });
+                                              updateSelectedItem(item.id, payload);
+                                            }}
+                                          />
+                                        </label>
+                                      </div>
+                                    </>
                                   ) : (
-                                    <label>
+                                    <label className="node-item-content-shell">
                                       <span>{t("条目内容", "Item Content", "workspacePage.properties.itemContent")}</span>
+                                      <button
+                                        type="button"
+                                        className="node-item-ref-btn"
+                                        onClick={() => insertReferenceTokenForItem(item.id)}
+                                      >
+                                        {t("引用", "Quote", "workspacePage.properties.itemInsertReference")}
+                                      </button>
                                       <textarea
+                                        ref={(element) => setItemContentTextareaRef(item.id, element)}
                                         value={item.content}
                                         onChange={(event) =>
                                           updateSelectedItem(item.id, { content: event.target.value })
@@ -2174,8 +2881,10 @@ function WorkspacePage() {
                                       onChange={(event) => updateSelectedItemType(item.id, event.target.value)}
                                     >
                                       <option value="list">{t("列表", "List", "workspacePage.properties.itemTypeList")}</option>
+                                      <option value="ordered">{t("顺序列表", "Ordered List", "workspacePage.properties.itemTypeOrdered")}</option>
                                       <option value="code">{t("代码块", "Code Block", "workspacePage.properties.itemTypeCode")}</option>
                                       <option value="table">{t("表格", "Table", "workspacePage.properties.itemTypeTable")}</option>
+                                      <option value="ifelse">{t("条件分支", "IF-ELSE", "workspacePage.properties.itemTypeIfElse")}</option>
                                     </select>
                                   </label>
                                   <button
@@ -2415,6 +3124,63 @@ function WorkspacePage() {
                           {!isRenderedEditable && <span className="md-list-bullet">{markerText}</span>}
                           <span>{isRenderedEditable ? block.text : renderInlineText(block.text)}</span>
                         </p>
+                      );
+                    }
+
+                    if (block.type === "ifelse") {
+                      const thenLines = block.thenLines?.length ? block.thenLines : [];
+                      const elseLines = block.elseLines?.length ? block.elseLines : [];
+                      const fallbackCondition = block.condition || (isZh ? "条件未填写" : "Condition not set");
+                      return (
+                        <section
+                          className={`md-ifelse ${interactiveClassName}`}
+                          key={block.id}
+                          style={{
+                            ...(blockStyle ?? {}),
+                            paddingLeft: `${0.6 + Math.min(block.indent ?? 0, 4) * 1}rem`
+                          }}
+                          ref={interactiveProps.ref}
+                          onClick={interactiveProps.onClick}
+                          onFocus={interactiveProps.onFocus}
+                          onKeyDown={interactiveProps.onKeyDown}
+                          tabIndex={interactiveProps.tabIndex}
+                          data-md-block-id={interactiveProps["data-md-block-id"]}
+                        >
+                          <p className="md-ifelse-condition">
+                            <span className="md-ifelse-key">IF</span>
+                            <span>{renderInlineText(fallbackCondition)}</span>
+                          </p>
+                          <div className="md-ifelse-branches">
+                            <div className="md-ifelse-branch">
+                              <p className="md-ifelse-branch-title">
+                                <span className="md-ifelse-key">THEN</span>
+                              </p>
+                              {thenLines.length ? (
+                                <ul className="md-ifelse-list">
+                                  {thenLines.map((line, lineIndex) => (
+                                    <li key={`${block.id}-then-${lineIndex}`}>{renderInlineText(line)}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="md-ifelse-empty">{isZh ? "无动作" : "No action"}</p>
+                              )}
+                            </div>
+                            <div className="md-ifelse-branch">
+                              <p className="md-ifelse-branch-title">
+                                <span className="md-ifelse-key">ELSE</span>
+                              </p>
+                              {elseLines.length ? (
+                                <ul className="md-ifelse-list">
+                                  {elseLines.map((line, lineIndex) => (
+                                    <li key={`${block.id}-else-${lineIndex}`}>{renderInlineText(line)}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="md-ifelse-empty">{isZh ? "无动作" : "No action"}</p>
+                              )}
+                            </div>
+                          </div>
+                        </section>
                       );
                     }
 

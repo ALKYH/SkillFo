@@ -4,12 +4,20 @@ import nodeEditorConfig from "./nodeEditorConfig.json";
 const NODE_W = 196;
 const NODE_H = 72;
 const DEFAULT_NODE_COLOR = "#61afef";
-const RESERVED_PARAM_KEYS = new Set(["color", "summary", "items", "folderId"]);
-const NODE_ITEM_TYPES = ["list", "code", "table"];
+const RESERVED_PARAM_KEYS = new Set(["color", "summary", "items", "folderId", "referenceOnly", "referenceNotes"]);
+const NODE_ITEM_TYPES = ["list", "ordered", "code", "table", "ifelse"];
 const TABLE_SIZE_MIN = 1;
 const TABLE_SIZE_MAX = 12;
 const DEFAULT_TABLE_ROWS = 3;
 const DEFAULT_TABLE_COLS = 2;
+const DEFAULT_IFELSE_CONDITION = "condition";
+const DEFAULT_IFELSE_THEN_LINE = "action when true";
+const DEFAULT_IFELSE_ELSE_LINE = "action when false";
+const REFERENCE_ESCAPE_REGEX = /_@(\d+)\$_/g;
+const SKILLFO_FORMAT = "skillfo.workspace.snapshot";
+const SKILLFO_FORMAT_VERSION = "1.0.0";
+const SKILLFO_PAYLOAD_START = "<!-- SKILLFO_WORKSPACE_PAYLOAD_START -->";
+const SKILLFO_PAYLOAD_END = "<!-- SKILLFO_WORKSPACE_PAYLOAD_END -->";
 const CODE_LANGUAGE_OPTIONS = [
   "text",
   "javascript",
@@ -183,6 +191,125 @@ function normalizeTableItemPayload(item = {}) {
   };
 }
 
+function stripListMarkerPrefix(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/^([-*+]|\d+\.)\s+/, "")
+    .trim();
+}
+
+function normalizeIfElseBranchLines(value, fallbackLine = "") {
+  const sourceLines = Array.isArray(value)
+    ? value.map((item) => String(item ?? ""))
+    : String(value ?? "").split("\n");
+  const lines = sourceLines.map((line) => stripListMarkerPrefix(line)).filter(Boolean);
+  if (lines.length) return lines;
+  const fallback = stripListMarkerPrefix(fallbackLine);
+  return fallback ? [fallback] : [];
+}
+
+function parseIfElseContent(content) {
+  const lines = String(content ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) {
+    return {
+      condition: "",
+      thenLines: [],
+      elseLines: []
+    };
+  }
+
+  let condition = "";
+  const thenLines = [];
+  const elseLines = [];
+  let mode = "then";
+
+  lines.forEach((line, index) => {
+    const ifMatch = line.match(/^IF\s*:\s*(.*)$/i);
+    if (ifMatch) {
+      condition = ifMatch[1].trim();
+      mode = "then";
+      return;
+    }
+
+    if (/^THEN\s*:?\s*$/i.test(line)) {
+      mode = "then";
+      return;
+    }
+
+    const thenInlineMatch = line.match(/^THEN\s*:\s*(.*)$/i);
+    if (thenInlineMatch) {
+      mode = "then";
+      const text = stripListMarkerPrefix(thenInlineMatch[1]);
+      if (text) thenLines.push(text);
+      return;
+    }
+
+    if (/^ELSE\s*:?\s*$/i.test(line)) {
+      mode = "else";
+      return;
+    }
+
+    const elseInlineMatch = line.match(/^ELSE\s*:\s*(.*)$/i);
+    if (elseInlineMatch) {
+      mode = "else";
+      const text = stripListMarkerPrefix(elseInlineMatch[1]);
+      if (text) elseLines.push(text);
+      return;
+    }
+
+    if (line === "---") {
+      mode = "else";
+      return;
+    }
+
+    if (!condition && index === 0) {
+      condition = stripListMarkerPrefix(line);
+      return;
+    }
+
+    const text = stripListMarkerPrefix(line);
+    if (!text) return;
+    if (mode === "else") {
+      elseLines.push(text);
+      return;
+    }
+    thenLines.push(text);
+  });
+
+  return { condition, thenLines, elseLines };
+}
+
+function ifElsePayloadToContent({ condition, thenLines, elseLines }) {
+  const safeCondition = String(condition ?? "").trim() || DEFAULT_IFELSE_CONDITION;
+  const safeThenLines = normalizeIfElseBranchLines(thenLines, DEFAULT_IFELSE_THEN_LINE);
+  const safeElseLines = normalizeIfElseBranchLines(elseLines, DEFAULT_IFELSE_ELSE_LINE);
+  return [
+    `IF: ${safeCondition}`,
+    "THEN:",
+    ...safeThenLines.map((line) => `- ${line}`),
+    "ELSE:",
+    ...safeElseLines.map((line) => `- ${line}`)
+  ].join("\n");
+}
+
+function normalizeIfElseItemPayload(item = {}) {
+  const parsed = parseIfElseContent(item.content);
+  const condition = String(item.ifCondition ?? parsed.condition ?? "").trim() || DEFAULT_IFELSE_CONDITION;
+  const thenLines = normalizeIfElseBranchLines(item.ifThen ?? parsed.thenLines, DEFAULT_IFELSE_THEN_LINE);
+  const elseLines = normalizeIfElseBranchLines(item.ifElse ?? parsed.elseLines, DEFAULT_IFELSE_ELSE_LINE);
+  return {
+    ifCondition: condition,
+    ifThen: thenLines.join("\n"),
+    ifElse: elseLines.join("\n"),
+    content: ifElsePayloadToContent({ condition, thenLines, elseLines })
+  };
+}
+
 function createNodeItem(overrides = {}, index = 0) {
   const type = normalizeItemType(overrides.type);
   const content = normalizeItemContent(overrides.content ?? overrides.value ?? "");
@@ -198,6 +325,13 @@ function createNodeItem(overrides = {}, index = 0) {
       ...base,
       language: normalizeLang(overrides.language ?? overrides.lang ?? "text"),
       content: normalizeItemContent(overrides.content ?? overrides.code ?? overrides.value ?? "")
+    };
+  }
+
+  if (type === "ifelse") {
+    return {
+      ...base,
+      ...normalizeIfElseItemPayload({ ...overrides, content })
     };
   }
 
@@ -223,11 +357,26 @@ function normalizeNodeItems(items, fallbackItem = null) {
   return [createNodeItem(fallbackItem, 0)];
 }
 
-function buildGenericNodeDefaults(color, summary, items) {
+function normalizeReferenceNotesMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result = {};
+  Object.entries(value).forEach(([key, rawValue]) => {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index <= 0) return;
+    const text = String(rawValue ?? "");
+    if (!text.trim()) return;
+    result[String(index)] = text;
+  });
+  return result;
+}
+
+function buildGenericNodeDefaults(color, summary, items, options = {}) {
   return {
     color,
     summary,
-    items: normalizeNodeItems(items)
+    items: normalizeNodeItems(items),
+    referenceOnly: options.referenceOnly === true,
+    referenceNotes: normalizeReferenceNotesMap(options.referenceNotes)
   };
 }
 
@@ -289,7 +438,11 @@ function normalizeNodeDefinition(rawDefinition = {}, fallbackType = "workflow") 
     title,
     label,
     color,
-    defaults: () => buildGenericNodeDefaults(defaultColor, summary, defaultItems)
+    defaults: () =>
+      buildGenericNodeDefaults(defaultColor, summary, defaultItems, {
+        referenceOnly: defaultsSource.referenceOnly,
+        referenceNotes: defaultsSource.referenceNotes
+      })
   };
 }
 
@@ -490,7 +643,9 @@ function normalizeNodeParams(rawParams, definition) {
   const normalized = {
     color: sanitizeNodeColor(source.color, sanitizeNodeColor(defaults.color, DEFAULT_NODE_COLOR)),
     summary: String(source.summary ?? defaults.summary ?? ""),
-    items
+    items,
+    referenceOnly: Boolean(source.referenceOnly ?? defaults.referenceOnly ?? false),
+    referenceNotes: normalizeReferenceNotesMap(source.referenceNotes ?? defaults.referenceNotes)
   };
 
   if (source.folderId) normalized.folderId = source.folderId;
@@ -501,7 +656,8 @@ function cloneNodeParams(params, definition) {
   const normalized = normalizeNodeParams(params, definition);
   return {
     ...normalized,
-    items: normalized.items.map((item) => ({ ...item }))
+    items: normalized.items.map((item) => ({ ...item })),
+    referenceNotes: { ...(normalized.referenceNotes ?? {}) }
   };
 }
 
@@ -536,16 +692,70 @@ function edgeId() {
   return `e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function getEdgeSourcePort(edge) {
+  const parsed = Number(edge?.sourcePort);
+  if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+  return 0;
+}
+
+function buildReferenceEscapeToken(index) {
+  const parsed = Number(index);
+  const normalized = Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+  return `_@${normalized}$_`;
+}
+
+function collectReferenceOutputIndexesFromText(value) {
+  const text = String(value ?? "");
+  if (!text) return [];
+
+  const indexes = new Set();
+  REFERENCE_ESCAPE_REGEX.lastIndex = 0;
+  let match = REFERENCE_ESCAPE_REGEX.exec(text);
+  while (match) {
+    const parsed = Number(match[1]);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      indexes.add(parsed);
+    }
+    match = REFERENCE_ESCAPE_REGEX.exec(text);
+  }
+  REFERENCE_ESCAPE_REGEX.lastIndex = 0;
+
+  return [...indexes].sort((a, b) => a - b);
+}
+
+function collectReferenceOutputIndexesFromItems(items = []) {
+  const indexes = new Set();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    collectReferenceOutputIndexesFromText(item?.content).forEach((port) => indexes.add(port));
+  });
+  return [...indexes].sort((a, b) => a - b);
+}
+
+function getNextReferenceOutputIndex(items = []) {
+  const indexes = collectReferenceOutputIndexesFromItems(items);
+  if (!indexes.length) return 1;
+  return indexes[indexes.length - 1] + 1;
+}
+
+function collectNodeReferenceOutputIndexes(node) {
+  if (!node || typeof node !== "object") return [];
+  const definition = NODE_LIBRARY[node.type] ?? NODE_LIBRARY.workflow;
+  const params = normalizeNodeParams(node.params, definition);
+  return collectReferenceOutputIndexesFromItems(params.items);
+}
+
 function enforceSingleOutgoingEdges(edges = []) {
-  const seenFrom = new Set();
+  const seenFromPort = new Set();
   const kept = [];
 
   for (let index = edges.length - 1; index >= 0; index -= 1) {
     const edge = edges[index];
     if (!edge?.from || !edge?.to) continue;
-    if (seenFrom.has(edge.from)) continue;
-    seenFrom.add(edge.from);
-    kept.push(edge);
+    const sourcePort = getEdgeSourcePort(edge);
+    const key = `${edge.from}::${sourcePort}`;
+    if (seenFromPort.has(key)) continue;
+    seenFromPort.add(key);
+    kept.push({ ...edge, sourcePort });
   }
 
   return kept.reverse();
@@ -601,25 +811,98 @@ function buildOutgoingMap(edges) {
   return map;
 }
 
+function normalizeInlineReferenceText(text) {
+  return String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function nodeReferenceInlineText(node, isZh) {
+  if (!node || typeof node !== "object") {
+    return isZh ? "引用节点" : "Referenced node";
+  }
+
+  const definition = NODE_LIBRARY[node.type] ?? NODE_LIBRARY.workflow;
+  const params = normalizeNodeParams(node.params, definition);
+  const appliedItems = params.items.filter((item) => item.applied !== false);
+  const usableItems = appliedItems.length ? appliedItems : params.items;
+
+  const parts = usableItems
+    .map((item) => {
+      const type = normalizeItemType(item.type);
+      if (type === "table") {
+        return normalizeInlineReferenceText(normalizeTableItemPayload(item).content);
+      }
+      if (type === "ifelse") {
+        return normalizeInlineReferenceText(normalizeIfElseItemPayload(item).content);
+      }
+      return normalizeInlineReferenceText(item.content);
+    })
+    .filter(Boolean);
+
+  if (parts.length) return parts.join(isZh ? "； " : "; ");
+
+  const summary = normalizeInlineReferenceText(params.summary);
+  if (summary) return summary;
+  return String(node.label ?? "").trim() || (isZh ? "引用节点" : "Referenced node");
+}
+
+function buildNodeReferenceTargetMap(nodeId, edges, idToNodeMap, isZh = false) {
+  const map = new Map();
+  edges.forEach((edge) => {
+    if (edge.from !== nodeId) return;
+    const sourcePort = getEdgeSourcePort(edge);
+    if (sourcePort <= 0) return;
+    const targetNode = idToNodeMap.get(edge.to);
+    if (!targetNode) return;
+    const targetDefinition = NODE_LIBRARY[targetNode.type] ?? NODE_LIBRARY.workflow;
+    const targetParams = normalizeNodeParams(targetNode.params, targetDefinition);
+    const replacement = targetParams.referenceOnly
+      ? nodeReferenceInlineText(targetNode, isZh)
+      : String(targetNode.label ?? "").trim();
+    const fallback = String(targetNode.label ?? "").trim() || edge.to;
+    map.set(sourcePort, replacement || fallback);
+  });
+  return map;
+}
+
+function resolveReferenceText(text, referenceTargetMap = new Map()) {
+  const source = String(text ?? "");
+  if (!source.includes("_@")) return source;
+  return source.replace(REFERENCE_ESCAPE_REGEX, (full, rawIndex) => {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || index <= 0) return full;
+    const target = referenceTargetMap.get(index);
+    return target ? target : full;
+  });
+}
+
 function itemTypeLabel(type, isZh) {
   const map = isZh
     ? {
         list: "列表",
+        ordered: "顺序列表",
         code: "代码块",
-        table: "表格"
+        table: "表格",
+        ifelse: "IF-ELSE"
       }
     : {
         list: "List",
+        ordered: "Ordered List",
         code: "Code",
-        table: "Table"
+        table: "Table",
+        ifelse: "IF-ELSE"
       };
   return map[normalizeItemType(type)] ?? map.list;
 }
 
-function buildSkillItemLines(item, itemIndex, isZh) {
+function buildSkillItemLines(item, itemIndex, isZh, referenceTargetMap = new Map()) {
   const title = item.title || (isZh ? `行为 ${itemIndex + 1}` : `Behavior ${itemIndex + 1}`);
-  const rawContent = String(item.content ?? "");
-  const contentLines = splitLines(item.content);
+  const rawContent = resolveReferenceText(item.content, referenceTargetMap);
+  const contentLines = splitLines(rawContent);
   const type = normalizeItemType(item.type);
 
   if (type === "code") {
@@ -632,8 +915,33 @@ function buildSkillItemLines(item, itemIndex, isZh) {
   }
 
   if (type === "table") {
-    const tableLines = normalizeTableItemPayload(item).content.split("\n");
+    const tableLines = resolveReferenceText(normalizeTableItemPayload(item).content, referenceTargetMap).split("\n");
     return [`- ${title}:`, ...indent(tableLines)];
+  }
+
+  if (type === "ordered") {
+    if (!contentLines.length) return [`- ${title}`];
+    return [
+      `- ${title}:`,
+      ...indent(contentLines.map((line, index) => `${index + 1}. ${line}`))
+    ];
+  }
+
+  if (type === "ifelse") {
+    const payload = normalizeIfElseItemPayload(item);
+    const condition = resolveReferenceText(payload.ifCondition, referenceTargetMap);
+    const thenLines = splitLines(resolveReferenceText(payload.ifThen, referenceTargetMap));
+    const elseLines = splitLines(resolveReferenceText(payload.ifElse, referenceTargetMap));
+    return [
+      `- ${title}:`,
+      ...indent([
+        `IF: ${condition}`,
+        "THEN:",
+        ...thenLines.map((line) => `- ${line}`),
+        "ELSE:",
+        ...elseLines.map((line) => `- ${line}`)
+      ])
+    ];
   }
 
   if (!contentLines.length) return [`- ${title}`];
@@ -845,28 +1153,21 @@ function generateSkillMarkdown(graph, isZh) {
   const nodeLines = sorted.flatMap((node) => {
     const definition = NODE_LIBRARY[node.type] ?? NODE_LIBRARY.workflow;
     const params = normalizeNodeParams(node.params, definition);
+    if (params.referenceOnly) return [];
     const appliedItems = params.items.filter((item) => item.applied !== false);
     const usableItems = appliedItems.length ? appliedItems : params.items;
+    const referenceTargetMap = buildNodeReferenceTargetMap(node.id, edges, idToNodeMap, isZh);
 
     const itemLines = usableItems.flatMap((item, itemIndex) =>
-      buildSkillItemLines(item, itemIndex, isZh)
+      buildSkillItemLines(item, itemIndex, isZh, referenceTargetMap)
     );
 
     const summary = String(params.summary || "").trim();
-    const edgeBehaviorLines = buildNodeEdgeBehaviorLines(
-      node,
-      sorted,
-      outgoingMap,
-      reachable,
-      idToNodeMap,
-      isZh
-    );
 
     return [
       `## ${node.label}`,
       ...(summary ? [`- ${summary}`] : []),
       ...(itemLines.length ? itemLines : [`- ${isZh ? "无显式行为条目" : "No explicit behavior item."}`]),
-      ...edgeBehaviorLines,
       ""
     ];
   });
@@ -887,91 +1188,424 @@ function generateSkillMarkdown(graph, isZh) {
   return lines.join("\n");
 }
 
-function generateSkillfoMarkdown(graph, workspaceState, isZh) {
-  const state = workspaceState ?? {};
-  const metadata = normalizeSkillMetadata(graph.metadata);
-  const nodes = graph.nodes.filter((node) => node.type !== "metadata");
+function parseBooleanFlag(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value !== "string") return fallback;
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function normalizeWorkspaceViewMode(value) {
+  return ["left", "split", "right"].includes(String(value)) ? String(value) : "split";
+}
+
+function normalizeWorkspaceMarkdownViewMode(value) {
+  return ["raw", "rendered"].includes(String(value)) ? String(value) : "raw";
+}
+
+function normalizeWorkspaceVimSubMode(value) {
+  return ["normal", "insert"].includes(String(value)) ? String(value) : "normal";
+}
+
+function normalizeWorkspaceActiveDoc(value) {
+  return ["skill", "skillfo"].includes(String(value)) ? String(value) : "skill";
+}
+
+function normalizeFolderTone(value) {
+  return ["cyan", "amber", "green", "pink"].includes(String(value)) ? String(value) : "cyan";
+}
+
+function normalizeSkillfoGraph(rawGraph = {}) {
+  const source =
+    rawGraph && typeof rawGraph === "object" && !Array.isArray(rawGraph)
+      ? rawGraph
+      : {};
+  const sourceNodes = Array.isArray(source.nodes) ? source.nodes : [];
+  const usedNodeIds = new Set();
+
+  const nodes = sourceNodes
+    .map((rawNode, index) => {
+      if (!rawNode || typeof rawNode !== "object") return null;
+
+      const type = normalizeNodeType(rawNode.type, "workflow");
+      ensureNodeTypeDefinition(NODE_LIBRARY, type);
+      const definition = NODE_LIBRARY[type] ?? NODE_LIBRARY.workflow;
+
+      let id = String(rawNode.id ?? "").trim();
+      if (!id || usedNodeIds.has(id)) {
+        id = nodeId(type, index + 1);
+        while (usedNodeIds.has(id)) {
+          id = nodeId(type, index + 1);
+        }
+      }
+      usedNodeIds.add(id);
+
+      const params = normalizeNodeParams(rawNode.params, definition);
+      const fallbackLabel = String(pick(definition.label, false) ?? type);
+      return {
+        id,
+        type,
+        label: String(rawNode.label ?? fallbackLabel).trim() || fallbackLabel,
+        x: num(rawNode.x, num(rawNode?.position?.x, 90 + index * 220)),
+        y: num(rawNode.y, num(rawNode?.position?.y, 96)),
+        params
+      };
+    })
+    .filter(Boolean);
+
   const nodeIdSet = new Set(nodes.map((node) => node.id));
-  const edges = graph.edges.filter((edge) => nodeIdSet.has(edge.from) && nodeIdSet.has(edge.to));
+  const edges = enforceSingleOutgoingEdges(
+    (Array.isArray(source.edges) ? source.edges : [])
+      .map((rawEdge) => {
+        if (!rawEdge || typeof rawEdge !== "object") return null;
+        const from = String(rawEdge.from ?? "").trim();
+        const to = String(rawEdge.to ?? "").trim();
+        if (!nodeIdSet.has(from) || !nodeIdSet.has(to)) return null;
+        return {
+          ...rawEdge,
+          id: String(rawEdge.id ?? edgeId()),
+          from,
+          to,
+          kind: String(rawEdge.kind ?? "default").trim() || "default",
+          sourcePort: getEdgeSourcePort(rawEdge)
+        };
+      })
+      .filter(Boolean)
+  );
+
+  const usedFolderIds = new Set();
+  const folders = (Array.isArray(source.folders) ? source.folders : [])
+    .map((rawFolder, index) => {
+      if (!rawFolder || typeof rawFolder !== "object") return null;
+      let id = String(rawFolder.id ?? "").trim();
+      if (!id || usedFolderIds.has(id)) {
+        id = folderId();
+        while (usedFolderIds.has(id)) {
+          id = folderId();
+        }
+      }
+      usedFolderIds.add(id);
+
+      const rawMembers = Array.isArray(rawFolder.nodeIds)
+        ? rawFolder.nodeIds
+        : Array.isArray(rawFolder.nodes)
+          ? rawFolder.nodes
+          : [];
+      const memberIds = Array.from(
+        new Set(
+          rawMembers
+            .map((value) => (typeof value === "object" ? value?.id : value))
+            .map((value) => String(value ?? "").trim())
+            .filter((value) => nodeIdSet.has(value))
+        )
+      );
+
+      if (!memberIds.length) return null;
+
+      return {
+        id,
+        label: String(rawFolder.label ?? `Folder ${index + 1}`).trim() || `Folder ${index + 1}`,
+        tone: normalizeFolderTone(rawFolder.tone),
+        x: num(rawFolder.x, 0),
+        y: num(rawFolder.y, 0),
+        width: Math.max(120, num(rawFolder.width, 240)),
+        height: Math.max(90, num(rawFolder.height, 180)),
+        nodeIds: memberIds
+      };
+    })
+    .filter(Boolean);
+
+  const folderMembership = new Map();
+  folders.forEach((folder) => {
+    folder.nodeIds.forEach((id) => folderMembership.set(id, folder.id));
+  });
+
+  const syncedNodes = nodes.map((node) => {
+    const definition = NODE_LIBRARY[node.type] ?? NODE_LIBRARY.workflow;
+    const params = cloneNodeParams(node.params, definition);
+    const targetFolderId = folderMembership.get(node.id);
+    if (targetFolderId) {
+      params.folderId = targetFolderId;
+    } else {
+      delete params.folderId;
+    }
+    return { ...node, params };
+  });
+
+  const folderIdSet = new Set(folders.map((folder) => folder.id));
+  const selectedNodeIdRaw = String(source.selectedNodeId ?? "").trim();
+  const selectedFolderIdRaw = String(source.selectedFolderId ?? "").trim();
+
+  return cloneGraph({
+    metadata: normalizeSkillMetadata(source.metadata),
+    nodes: syncedNodes,
+    edges,
+    folders,
+    selectedNodeId: nodeIdSet.has(selectedNodeIdRaw)
+      ? selectedNodeIdRaw
+      : (syncedNodes[0]?.id ?? null),
+    selectedFolderId: folderIdSet.has(selectedFolderIdRaw) ? selectedFolderIdRaw : null
+  });
+}
+
+function normalizeSkillfoWorkspaceState(rawWorkspaceState = {}, graph = INITIAL_GRAPH) {
+  const source =
+    rawWorkspaceState && typeof rawWorkspaceState === "object" && !Array.isArray(rawWorkspaceState)
+      ? rawWorkspaceState
+      : {};
+  const nodeIdSet = new Set((graph?.nodes ?? []).map((node) => node.id));
+  const folderIdSet = new Set((graph?.folders ?? []).map((folder) => folder.id));
+
+  const selectedNodeIdsRaw = Array.isArray(source.selectedNodeIds) ? source.selectedNodeIds : [];
+  const selectedNodeIds = Array.from(
+    new Set(
+      selectedNodeIdsRaw
+        .map((value) => String(value ?? "").trim())
+        .filter((value) => nodeIdSet.has(value))
+    )
+  );
+
+  const selectedNodeIdRaw = String(source.selectedNodeId ?? graph?.selectedNodeId ?? "").trim();
+  const selectedNodeId = nodeIdSet.has(selectedNodeIdRaw)
+    ? selectedNodeIdRaw
+    : (graph?.selectedNodeId ?? null);
+
+  if (selectedNodeId && !selectedNodeIds.includes(selectedNodeId)) {
+    selectedNodeIds.push(selectedNodeId);
+  }
+
+  const selectedFolderIdRaw = String(source.selectedFolderId ?? graph?.selectedFolderId ?? "").trim();
+  const selectedFolderId = folderIdSet.has(selectedFolderIdRaw)
+    ? selectedFolderIdRaw
+    : (graph?.selectedFolderId ?? null);
+
+  return {
+    viewMode: normalizeWorkspaceViewMode(source.viewMode),
+    isDocMappingLive: parseBooleanFlag(source.isDocMappingLive, true),
+    markdownViewMode: normalizeWorkspaceMarkdownViewMode(source.markdownViewMode),
+    isModuleColorMappingOn: parseBooleanFlag(source.isModuleColorMappingOn, true),
+    vimSubMode: normalizeWorkspaceVimSubMode(source.vimSubMode),
+    activeDoc: normalizeWorkspaceActiveDoc(source.activeDoc),
+    selectedNodeIds,
+    selectedNodeId,
+    selectedFolderId
+  };
+}
+
+function normalizeSkillfoDocuments(rawDocuments = {}, graph = INITIAL_GRAPH) {
+  const source =
+    rawDocuments && typeof rawDocuments === "object" && !Array.isArray(rawDocuments)
+      ? rawDocuments
+      : {};
+  const hasSkillMarkdown = Object.prototype.hasOwnProperty.call(source, "skillMarkdown");
+  return {
+    skillMarkdown: hasSkillMarkdown && source.skillMarkdown !== undefined && source.skillMarkdown !== null
+      ? String(source.skillMarkdown)
+      : generateSkillMarkdown(graph, false)
+  };
+}
+
+function buildSkillfoTopologySnapshot(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const nodeIdSet = new Set(nodes.map((node) => node.id));
+  const edges = (Array.isArray(graph?.edges) ? graph.edges : [])
+    .filter((edge) => nodeIdSet.has(edge.from) && nodeIdSet.has(edge.to))
+    .map((edge) => ({
+      edgeId: String(edge.id ?? ""),
+      from: edge.from,
+      to: edge.to,
+      kind: String(edge.kind ?? "default"),
+      sourcePort: getEdgeSourcePort(edge)
+    }));
+
+  const outgoingByNode = {};
+  const incomingByNode = {};
+  nodes.forEach((node) => {
+    outgoingByNode[node.id] = [];
+    incomingByNode[node.id] = [];
+  });
+
+  edges.forEach((edge) => {
+    outgoingByNode[edge.from]?.push({
+      edgeId: edge.edgeId,
+      to: edge.to,
+      kind: edge.kind,
+      sourcePort: edge.sourcePort
+    });
+    incomingByNode[edge.to]?.push({
+      edgeId: edge.edgeId,
+      from: edge.from,
+      kind: edge.kind,
+      sourcePort: edge.sourcePort
+    });
+  });
+
   const outgoingMap = buildOutgoingMap(edges);
   const incomingMap = buildIncomingMap(edges);
-  const reachable = new Set(nodes.map((node) => node.id));
-  const sorted = topoSortReachableNodes({ ...graph, nodes, edges }, reachable, outgoingMap, incomingMap);
+  const reachableSet = new Set(nodes.map((node) => node.id));
+  const topologicalOrder = topoSortReachableNodes(
+    { ...graph, nodes, edges },
+    reachableSet,
+    outgoingMap,
+    incomingMap
+  ).map((node) => node.id);
+
+  return {
+    topologicalOrder,
+    outgoingByNode,
+    incomingByNode
+  };
+}
+
+function buildSkillfoPayload(graph, workspaceState = {}) {
+  const normalizedGraph = normalizeSkillfoGraph(graph);
+  const normalizedWorkspaceState = normalizeSkillfoWorkspaceState(workspaceState, normalizedGraph);
+  const normalizedDocuments = normalizeSkillfoDocuments(
+    workspaceState?.documents ?? { skillMarkdown: workspaceState?.skillMarkdown },
+    normalizedGraph
+  );
+
+  return {
+    format: SKILLFO_FORMAT,
+    formatVersion: SKILLFO_FORMAT_VERSION,
+    generatedAt: new Date().toISOString(),
+    metadata: normalizeSkillMetadata(normalizedGraph.metadata),
+    workspaceState: normalizedWorkspaceState,
+    documents: normalizedDocuments,
+    graph: normalizedGraph,
+    topology: buildSkillfoTopologySnapshot(normalizedGraph)
+  };
+}
+
+function extractSkillfoPayloadJson(markdown) {
+  const content = String(markdown ?? "");
+  if (!content.trim()) return "";
+
+  const start = content.indexOf(SKILLFO_PAYLOAD_START);
+  if (start >= 0) {
+    const afterStart = content.slice(start + SKILLFO_PAYLOAD_START.length);
+    const end = afterStart.indexOf(SKILLFO_PAYLOAD_END);
+    const scoped = end >= 0 ? afterStart.slice(0, end) : afterStart;
+    const fenced = scoped.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) return fenced[1].trim();
+    return scoped.trim();
+  }
+
+  const fencedBlocks = [...content.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  for (const block of fencedBlocks) {
+    const candidate = String(block[1] ?? "").trim();
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && (parsed.graph || parsed.nodes || parsed.format)) {
+        return candidate;
+      }
+    } catch {
+      // Try next fenced block.
+    }
+  }
+
+  const trimmed = content.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    return trimmed;
+  }
+
+  return "";
+}
+
+function parseSkillfoMarkdown(markdown) {
+  const payloadText = extractSkillfoPayloadJson(markdown);
+  if (!payloadText) {
+    throw new Error("Cannot find SKILLFO workspace payload.");
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch (error) {
+    throw new Error(`Invalid SKILLFO payload JSON: ${error.message}`);
+  }
+
+  const payloadObject =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload
+      : {};
+  const rawGraph =
+    payloadObject.graph && typeof payloadObject.graph === "object"
+      ? payloadObject.graph
+      : {
+          metadata: payloadObject.metadata,
+          nodes: payloadObject.nodes,
+          edges: payloadObject.edges,
+          folders: payloadObject.folders,
+          selectedNodeId: payloadObject.selectedNodeId,
+          selectedFolderId: payloadObject.selectedFolderId
+        };
+
+  const graph = normalizeSkillfoGraph(rawGraph);
+  const workspaceState = normalizeSkillfoWorkspaceState(payloadObject.workspaceState, graph);
+  const documents = normalizeSkillfoDocuments(
+    payloadObject.documents ?? { skillMarkdown: payloadObject.skillMarkdown },
+    graph
+  );
+
+  return {
+    format: String(payloadObject.format ?? ""),
+    formatVersion: String(payloadObject.formatVersion ?? ""),
+    graph,
+    workspaceState,
+    documents
+  };
+}
+
+function buildSkillfoTopologyLines(graph) {
+  const nodeMap = new Map((graph.nodes ?? []).map((node) => [node.id, node]));
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  if (!edges.length) return ["- no_edges"];
+
+  return edges.map((edge) => {
+    const fromNode = nodeMap.get(edge.from);
+    const toNode = nodeMap.get(edge.to);
+    const fromLabel = `${fromNode?.label ?? edge.from} (${edge.from})`;
+    const toLabel = `${toNode?.label ?? edge.to} (${edge.to})`;
+    return `- ${fromLabel} -> ${toLabel} [kind=${edge.kind || "default"}, sourcePort=${getEdgeSourcePort(edge)}, edgeId=${edge.id}]`;
+  });
+}
+
+function generateSkillfoMarkdown(graph, workspaceState, isZh) {
+  const payload = buildSkillfoPayload(graph, workspaceState);
+  const payloadJson = JSON.stringify(payload, null, 2);
+  const topologyLines = buildSkillfoTopologyLines(payload.graph);
+  const selectedNodeCount = payload.workspaceState.selectedNodeIds?.length ?? 0;
 
   const lines = [
     "# SKILLFO.md",
     "",
-    `## ${isZh ? "Metadata Properties（元数据属性）" : "Metadata Properties"}`,
-    `- ${isZh ? "技能名称" : "Skill Name"}: ${metadata.skillName}`,
-    `- ${isZh ? "描述" : "Description"}: ${metadata.description}`,
+    "Machine-readable workspace snapshot.",
+    "All field names are declared in English to avoid parser ambiguity and encoding issues.",
     "",
-    `## ${isZh ? "Workspace Properties（工作区属性）" : "Workspace Properties"}`,
-    `- ${isZh ? "视图模式" : "View mode"}: ${state.viewMode ?? "split"}`,
-    `- ${isZh ? "文档映射" : "Doc mapping"}: ${state.isDocMappingLive ? (isZh ? "开启" : "ON") : (isZh ? "关闭" : "OFF")}`,
-    `- ${isZh ? "预览模式" : "Preview mode"}: ${state.markdownViewMode ?? "raw"}`,
-    `- ${isZh ? "颜色映射" : "Color mapping"}: ${state.isModuleColorMappingOn ? (isZh ? "开启" : "ON") : (isZh ? "关闭" : "OFF")}`,
-    `- ${isZh ? "编辑状态" : "Editor mode"}: Vim ${state.vimSubMode === "insert" ? "INSERT" : "NORMAL"}`,
-    `- ${isZh ? "当前文档" : "Current document"}: ${state.activeDoc === "skillfo" ? "SKILLFO.md" : "SKILL.md"}`,
-    `- ${isZh ? "节点数量" : "Node count"}: ${nodes.length}`,
-    `- ${isZh ? "连线数量" : "Edge count"}: ${edges.length}`,
-    `- ${isZh ? "文件夹数量" : "Folder count"}: ${(graph.folders ?? []).length}`,
-    `- ${isZh ? "选中节点数" : "Selected nodes"}: ${state.selectedNodeCount ?? 0}`,
+    "## SnapshotSummary",
+    `- format: ${payload.format}`,
+    `- formatVersion: ${payload.formatVersion}`,
+    `- generatedAt: ${payload.generatedAt}`,
+    `- nodeCount: ${payload.graph.nodes.length}`,
+    `- edgeCount: ${payload.graph.edges.length}`,
+    `- folderCount: ${(payload.graph.folders ?? []).length}`,
+    `- selectedNodeCount: ${selectedNodeCount}`,
     "",
-    `## ${isZh ? "Node Properties（节点属性）" : "Node Properties"}`,
-    ...(sorted.length
-      ? sorted.flatMap((node, index) => {
-          const definition = NODE_LIBRARY[node.type] ?? NODE_LIBRARY.workflow;
-          const params = normalizeNodeParams(node.params, definition);
-          const itemLines = params.items.length
-            ? params.items.flatMap((item, itemIndex) => {
-                const title = item.title || (isZh ? `条目 ${itemIndex + 1}` : `Item ${itemIndex + 1}`);
-                const stateText = [
-                  item.applied !== false ? (isZh ? "应用中" : "applied") : (isZh ? "未应用" : "inactive"),
-                  itemTypeLabel(item.type, isZh)
-                ].join(" / ");
-                const content = splitLines(item.content);
-                return [
-                  `- ${title} [${stateText}]`,
-                  ...indent(content.length ? content.map((line) => `- ${line}`) : [`- ${isZh ? "空内容" : "Empty content"}`], 1)
-                ];
-              })
-            : [`- ${isZh ? "无条目" : "No items"}`];
-
-          return [
-            `### ${index + 1}. ${node.label}`,
-            `- id: ${node.id}`,
-            `- ${isZh ? "类型" : "Type"}: ${node.type}`,
-            `- ${isZh ? "展示名称" : "Display"}: ${pick(definition.title, isZh)}`,
-            `- ${isZh ? "坐标" : "Position"}: (${node.x}, ${node.y})`,
-            `- ${isZh ? "颜色" : "Color"}: ${sanitizeNodeColor(params.color, definition.color ?? DEFAULT_NODE_COLOR)}`,
-            `- ${isZh ? "概要" : "Summary"}: ${params.summary || (isZh ? "无" : "None")}`,
-            `- ${isZh ? "条目" : "Items"}:`,
-            ...indent(itemLines),
-            ""
-          ];
-        })
-      : [`- ${isZh ? "暂无节点" : "No nodes available."}`, ""]),
-    `## ${isZh ? "Edge Topology（连线拓扑）" : "Edge Topology"}`,
-    ...(edges.length
-      ? edges.map((edge) => {
-          const from = nodes.find((node) => node.id === edge.from)?.label ?? edge.from;
-          const to = nodes.find((node) => node.id === edge.to)?.label ?? edge.to;
-          return `- ${from} -> ${to} [${edge.kind || "default"}]`;
-        })
-      : [`- ${isZh ? "暂无连线" : "No edges."}`]),
+    "## GraphTopology",
+    ...topologyLines,
     "",
-    `## ${isZh ? "Folders（封装组）" : "Folders"}`,
-    ...((graph.folders ?? []).length
-      ? (graph.folders ?? []).flatMap((folder) => {
-          const members = folder.nodeIds
-            .map((id) => graph.nodes.find((node) => node.id === id)?.label)
-            .filter(Boolean);
-          return [
-            `- ${folder.label} (${members.length})`,
-            ...indent(members.map((label) => `- ${label}`))
-          ];
-        })
-      : [`- ${isZh ? "无文件夹" : "No folders."}`]),
+    "## WorkspacePayload",
+    SKILLFO_PAYLOAD_START,
+    "```json",
+    payloadJson,
+    "```",
+    SKILLFO_PAYLOAD_END,
     ""
   ];
 
@@ -1007,6 +1641,7 @@ export {
   clampItemTableSize,
   normalizeTableDataShape,
   normalizeTableItemPayload,
+  normalizeIfElseItemPayload,
   createNodeItem,
   normalizeNodeParams,
   cloneNodeParams,
@@ -1015,6 +1650,11 @@ export {
   num,
   nodeId,
   edgeId,
+  getEdgeSourcePort,
+  buildReferenceEscapeToken,
+  collectReferenceOutputIndexesFromItems,
+  collectNodeReferenceOutputIndexes,
+  getNextReferenceOutputIndex,
   enforceSingleOutgoingEdges,
   buildEdgeCurvePath,
   folderId,
@@ -1023,6 +1663,7 @@ export {
   indent,
   generateSkillMarkdown,
   generateSkillfoMarkdown,
+  parseSkillfoMarkdown,
   isEditableElement,
   snapToGrid,
 };

@@ -27,6 +27,108 @@ const DEFAULT_HEADING_ALIASES = [
   { moduleId: "notes", keywords: ["execution notes", "执行说明", "composer notes", "编排说明"] }
 ];
 
+const ADDITIONAL_HEADING_ALIASES = [
+  {
+    moduleId: "metadata",
+    keywords: [
+      "objective",
+      "summary",
+      "purpose",
+      "scope",
+      "background",
+      "\u76ee\u6807",
+      "\u6982\u8ff0",
+      "\u80cc\u666f"
+    ]
+  },
+  {
+    moduleId: "prereq",
+    keywords: [
+      "trigger",
+      "precondition",
+      "when to use",
+      "before you begin",
+      "\u89e6\u53d1",
+      "\u524d\u7f6e\u6761\u4ef6",
+      "\u4f55\u65f6\u4f7f\u7528"
+    ]
+  },
+  {
+    moduleId: "env",
+    keywords: [
+      "setup",
+      "external tool",
+      "tooling",
+      "workspace state",
+      "\u73af\u5883\u51c6\u5907",
+      "\u5916\u90e8\u5de5\u5177",
+      "\u5de5\u4f5c\u533a\u72b6\u6001"
+    ]
+  },
+  {
+    moduleId: "workflow",
+    keywords: [
+      "procedure",
+      "process",
+      "node type set",
+      "node and item mapping",
+      "inference rules",
+      "causal semantics analysis",
+      "atomic item",
+      "\u6d41\u7a0b",
+      "\u8282\u70b9\u548c\u6761\u76ee\u6620\u5c04",
+      "\u63a8\u65ad\u89c4\u5219"
+    ]
+  },
+  {
+    moduleId: "topology",
+    keywords: [
+      "graph topology",
+      "branch graph",
+      "graph construction",
+      "branch graph construction",
+      "topology requirements",
+      "\u5206\u652f\u56fe",
+      "\u62d3\u6251\u8981\u6c42"
+    ]
+  },
+  {
+    moduleId: "paths",
+    keywords: [
+      "reference and port",
+      "reference and port rules",
+      "routing",
+      "branch path",
+      "\u5f15\u7528\u548c\u7aef\u53e3\u89c4\u5219",
+      "\u8def\u7531"
+    ]
+  },
+  {
+    moduleId: "guardrail",
+    keywords: [
+      "hard requirements",
+      "blocking rules",
+      "hard rules",
+      "constraints",
+      "validation",
+      "\u786c\u6027\u8981\u6c42",
+      "\u963b\u585e\u89c4\u5219",
+      "\u7ea6\u675f",
+      "\u6821\u9a8c"
+    ]
+  },
+  {
+    moduleId: "notes",
+    keywords: [
+      "example",
+      "appendix",
+      "minimal branch example",
+      "\u793a\u4f8b",
+      "\u9644\u5f55"
+    ]
+  }
+];
+
 const DEFAULT_MODULE_RULES = {
   [DEFAULT_MODULE_ID]: { mode: "none", typeKeys: [] },
   metadata: { mode: "types", typeKeys: ["metadata"] },
@@ -217,7 +319,9 @@ export function buildMarkdownAssociationConfig(nodeLibrary = {}, options = {}) {
     moduleRules[normalizedModuleId] = normalizedNextRule;
   };
 
-  DEFAULT_HEADING_ALIASES.forEach((item) => registerAlias(item.moduleId, item.keywords));
+  [...DEFAULT_HEADING_ALIASES, ...ADDITIONAL_HEADING_ALIASES].forEach((item) =>
+    registerAlias(item.moduleId, item.keywords)
+  );
 
   Object.entries(resolvedNodeLibrary).forEach(([rawType, definition]) => {
     const type = String(rawType ?? "").trim();
@@ -266,6 +370,8 @@ export function buildMarkdownAssociationConfig(nodeLibrary = {}, options = {}) {
 }
 
 export const DEFAULT_MARKDOWN_ASSOCIATION_CONFIG = buildMarkdownAssociationConfig();
+const MAX_HIGHLIGHT_CODE_CHARS = 120000;
+const MAX_HIGHLIGHT_CODE_LINES = 2000;
 
 function escapeHtml(text) {
   return String(text)
@@ -369,14 +475,38 @@ function highlightCodeLine(line, lang) {
 }
 
 export function highlightCode(code, lang) {
+  const safeCode = typeof code === "string" ? code : String(code ?? "");
   const normalizedLang = normalizeLang(lang);
+  if (!safeCode) return "";
+
   if (normalizedLang === "text" || normalizedLang === "markdown" || normalizedLang === "md") {
-    return escapeHtml(code);
+    return escapeHtml(safeCode);
   }
-  return String(code)
-    .split("\n")
-    .map((line) => highlightCodeLine(line, normalizedLang))
-    .join("\n");
+
+  // Guard the rendered preview against very large blocks that can freeze/crash
+  // when tokenized on every render pass.
+  if (safeCode.length > MAX_HIGHLIGHT_CODE_CHARS) {
+    return escapeHtml(safeCode);
+  }
+
+  const lines = safeCode.split("\n");
+  if (lines.length > MAX_HIGHLIGHT_CODE_LINES) {
+    return escapeHtml(safeCode);
+  }
+
+  try {
+    return lines
+      .map((line) => {
+        try {
+          return highlightCodeLine(String(line ?? ""), normalizedLang);
+        } catch {
+          return escapeHtml(line ?? "");
+        }
+      })
+      .join("\n");
+  } catch {
+    return escapeHtml(safeCode);
+  }
 }
 
 function resolveModuleIdFromHeading(text, associationConfig = DEFAULT_MARKDOWN_ASSOCIATION_CONFIG) {
@@ -448,6 +578,107 @@ function tableAlignmentsFromSeparator(cells, width) {
     if (ends) return "right";
     return "left";
   });
+}
+
+function lineIndentSize(line) {
+  const match = String(line ?? "").match(/^(\s*)/);
+  return (match?.[1] ?? "").length;
+}
+
+function stripMarkdownListMarker(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/^([-*+]|\d+\.)\s+/, "")
+    .trim();
+}
+
+function parseIfElseBlock(lines, startIndex) {
+  const line = lines[startIndex];
+  const ifMatch = String(line ?? "").match(/^(\s*)IF\s*:\s*(.*)$/i);
+  if (!ifMatch) return null;
+
+  const baseIndent = (ifMatch[1] ?? "").length;
+  const condition = stripMarkdownListMarker(ifMatch[2] ?? "");
+  const thenLines = [];
+  const elseLines = [];
+  let mode = "then";
+  let sawThen = false;
+  let sawElse = false;
+  let j = startIndex + 1;
+
+  while (j < lines.length) {
+    const candidate = lines[j];
+    const trimmed = String(candidate ?? "").trim();
+    const candidateIndent = lineIndentSize(candidate);
+
+    if (!trimmed) {
+      j += 1;
+      continue;
+    }
+
+    if (/^THEN\s*:?\s*$/i.test(trimmed)) {
+      mode = "then";
+      sawThen = true;
+      j += 1;
+      continue;
+    }
+
+    const thenInlineMatch = trimmed.match(/^THEN\s*:\s*(.*)$/i);
+    if (thenInlineMatch) {
+      mode = "then";
+      sawThen = true;
+      const text = stripMarkdownListMarker(thenInlineMatch[1]);
+      if (text) thenLines.push(text);
+      j += 1;
+      continue;
+    }
+
+    if (/^ELSE\s*:?\s*$/i.test(trimmed)) {
+      mode = "else";
+      sawElse = true;
+      j += 1;
+      continue;
+    }
+
+    const elseInlineMatch = trimmed.match(/^ELSE\s*:\s*(.*)$/i);
+    if (elseInlineMatch) {
+      mode = "else";
+      sawElse = true;
+      const text = stripMarkdownListMarker(elseInlineMatch[1]);
+      if (text) elseLines.push(text);
+      j += 1;
+      continue;
+    }
+
+    // Keep parsing THEN/ELSE branch content even when bullets align with IF/THEN/ELSE.
+    if (candidateIndent < baseIndent) break;
+    if (/^\s*(#{1,6})\s+/.test(candidate) || /^\s*(```+|~~~+)/.test(candidate)) break;
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(candidate)) break;
+    if (candidateIndent === baseIndent && /^IF\s*:/i.test(trimmed)) break;
+
+    const text = stripMarkdownListMarker(trimmed);
+    if (text) {
+      if (mode === "else") {
+        elseLines.push(text);
+      } else {
+        thenLines.push(text);
+      }
+    }
+    j += 1;
+  }
+
+  if (!sawThen && !sawElse) return null;
+
+  return {
+    type: "ifelse",
+    indent: Math.floor(baseIndent / 2),
+    condition,
+    thenLines,
+    elseLines,
+    text: [condition, ...thenLines, ...elseLines].filter(Boolean).join(" "),
+    lineStart: startIndex,
+    lineEnd: j
+  };
 }
 
 export function parseMarkdownBlocks(markdown, associationConfig = DEFAULT_MARKDOWN_ASSOCIATION_CONFIG) {
@@ -566,6 +797,16 @@ export function parseMarkdownBlocks(markdown, associationConfig = DEFAULT_MARKDO
       }
     }
 
+    const ifElseBlock = parseIfElseBlock(lines, i);
+    if (ifElseBlock) {
+      blocks.push({
+        ...ifElseBlock,
+        module: currentModule
+      });
+      i = ifElseBlock.lineEnd;
+      continue;
+    }
+
     if (/^\s*>/.test(line)) {
       const quoteLines = [];
       let j = i;
@@ -616,6 +857,7 @@ export function parseMarkdownBlocks(markdown, associationConfig = DEFAULT_MARKDO
       !/^\s*(```+|~~~+)/.test(lines[i]) &&
       !/^\s*(#{1,6})\s+/.test(lines[i]) &&
       !/^\s*>/.test(lines[i]) &&
+      !/^\s*IF\s*:/i.test(lines[i]) &&
       !/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(lines[i]) &&
       !/^(\s*)([-*+]|\d+\.)\s+/.test(lines[i]) &&
       !(
@@ -719,13 +961,32 @@ export function annotateMarkdownBlocks(
       folderId: node.params?.folderId
     }))
     .filter((node) => node.id);
+  const normalizedNodeMap = new Map(
+    normalizedNodes.map((node) => [node.id, node])
+  );
+  const nodeOrderMap = new Map(normalizedNodes.map((node, index) => [node.id, index]));
+  const getNodeOrder = (nodeId) => nodeOrderMap.get(nodeId) ?? Number.MAX_SAFE_INTEGER;
+  let lastSectionOrder = -1;
   let currentSectionNodeId = null;
+
+  const inferHeadingNodeByModule = (moduleId) => {
+    const candidates = fallbackNodeIdsByModule(moduleId, normalizedNodes, resolvedAssociation)
+      .filter((nodeId) => normalizedNodeMap.has(nodeId))
+      .sort((a, b) => getNodeOrder(a) - getNodeOrder(b));
+    if (!candidates.length) return null;
+    const forward = candidates.find((nodeId) => getNodeOrder(nodeId) > lastSectionOrder);
+    return forward ?? candidates[0];
+  };
 
   return blocks.map((block, index) => {
     if (block.type === "heading") {
-      const headingNodeId = nodeIdFromHeadingText(block.text, normalizedNodes);
+      let headingNodeId = nodeIdFromHeadingText(block.text, normalizedNodes);
+      if (!headingNodeId && (block.level ?? 0) <= 2) {
+        headingNodeId = inferHeadingNodeByModule(block.module);
+      }
       if (headingNodeId) {
         currentSectionNodeId = headingNodeId;
+        lastSectionOrder = Math.max(lastSectionOrder, getNodeOrder(headingNodeId));
       } else if ((block.level ?? 0) <= 2) {
         currentSectionNodeId = null;
       }
@@ -741,28 +1002,44 @@ export function annotateMarkdownBlocks(
       if (block.type === "quote") {
         return Array.isArray(block.lines) ? block.lines.join("\n") : block.text;
       }
+      if (block.type === "ifelse") {
+        return [
+          block.condition,
+          ...(Array.isArray(block.thenLines) ? block.thenLines : []),
+          ...(Array.isArray(block.elseLines) ? block.elseLines : [])
+        ].join("\n");
+      }
       return block.text;
     })();
     const relatedByLabel = normalizedNodes
       .filter((node) => node.label && blockIncludesNodeLabel(sourceText, node.label))
       .map((node) => node.id);
 
-    const contextualIds =
-      relatedByLabel.length
+    const contextualIds = currentSectionNodeId
+      ? [
+          currentSectionNodeId,
+          ...relatedByLabel.filter((nodeId) => nodeId !== currentSectionNodeId)
+        ]
+      : relatedByLabel.length
         ? relatedByLabel
-        : currentSectionNodeId
-          ? [currentSectionNodeId]
-          : fallbackNodeIdsByModule(block.module, normalizedNodes, resolvedAssociation);
+        : fallbackNodeIdsByModule(block.module, normalizedNodes, resolvedAssociation);
 
     const relatedNodeIds = Array.from(
       new Set(contextualIds)
     );
+    const primaryNodeId = relatedNodeIds[0] ?? null;
+    const primaryNode = primaryNodeId ? normalizedNodeMap.get(primaryNodeId) : null;
+    const hasDirectContext = Boolean(primaryNodeId);
+    const resolvedModule = hasDirectContext && primaryNode?.type
+      ? normalizeModuleId(primaryNode.type, resolvedAssociation.defaultModule ?? DEFAULT_MODULE_ID)
+      : normalizeModuleId(block.module, resolvedAssociation.defaultModule ?? DEFAULT_MODULE_ID);
 
     return {
       ...block,
       id: `md-block-${index + 1}`,
+      module: resolvedModule,
       relatedNodeIds,
-      primaryNodeId: relatedNodeIds[0] ?? null
+      primaryNodeId
     };
   });
 }

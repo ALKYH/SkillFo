@@ -24,24 +24,32 @@ function createRawEditorStyle({
   const segments = [];
   let cursor = 0;
 
-  sortedBlocks.forEach((block) => {
+  sortedBlocks.forEach((block, index) => {
     const startLine = Math.max(0, Math.min(totalLines, block.lineStart ?? 0));
     const endLine = Math.max(
       startLine,
       Math.min(totalLines, Math.max(startLine + 1, block.lineEnd ?? startLine + 1))
     );
+    const color = String(colors[block.module] ?? generalColor);
 
     if (startLine > cursor) {
       const gapStart = ((cursor / totalLines) * 100).toFixed(3);
       const gapEnd = ((startLine / totalLines) * 100).toFixed(3);
+      const previousBlock = index > 0 ? sortedBlocks[index - 1] : null;
+      const previousColor = previousBlock
+        ? String(colors[previousBlock.module] ?? generalColor)
+        : generalColor;
+      const gapColor =
+        previousBlock && previousBlock.module === block.module
+          ? previousColor
+          : generalColor;
       segments.push(
-        `${generalColor} ${gapStart}%, ${generalColor} ${gapEnd}%`
+        `${gapColor} ${gapStart}%, ${gapColor} ${gapEnd}%`
       );
     }
 
     const start = ((startLine / totalLines) * 100).toFixed(3);
     const end = ((endLine / totalLines) * 100).toFixed(3);
-    const color = String(colors[block.module] ?? generalColor);
     segments.push(`${color} ${start}%, ${color} ${end}%`);
     cursor = Math.max(cursor, endLine);
   });
@@ -114,6 +122,63 @@ function handleMarkdownBlockKeyDown({
   }
 }
 
+function getBlockRange(block) {
+  const start = Math.max(0, Number(block?.lineStart ?? 0));
+  const end = Math.max(start + 1, Number(block?.lineEnd ?? start + 1));
+  return { start, end };
+}
+
+function findNearestBlockByLine(markdownBlocks, line) {
+  if (!Array.isArray(markdownBlocks) || !markdownBlocks.length) return null;
+
+  const sortedBlocks = [...markdownBlocks].sort((a, b) => {
+    const aStart = Number(a?.lineStart ?? 0);
+    const bStart = Number(b?.lineStart ?? 0);
+    if (aStart !== bStart) return aStart - bStart;
+    return Number(a?.lineEnd ?? aStart + 1) - Number(b?.lineEnd ?? bStart + 1);
+  });
+
+  const containing = sortedBlocks.find((block) => {
+    const range = getBlockRange(block);
+    return line >= range.start && line < range.end;
+  });
+  if (containing) return containing;
+
+  let nearest = sortedBlocks[0];
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  sortedBlocks.forEach((block) => {
+    const range = getBlockRange(block);
+    const distance =
+      line < range.start
+        ? range.start - line
+        : line >= range.end
+          ? line - range.end + 1
+          : 0;
+
+    if (distance < nearestDistance) {
+      nearest = block;
+      nearestDistance = distance;
+      return;
+    }
+
+    if (distance === nearestDistance) {
+      const nearestRange = getBlockRange(nearest);
+      const nearestStartsAfterLine = nearestRange.start > line;
+      const currentStartsAfterLine = range.start > line;
+      if (nearestStartsAfterLine && !currentStartsAfterLine) {
+        nearest = block;
+      } else if (nearestStartsAfterLine === currentStartsAfterLine) {
+        const nearestStart = nearestRange.start;
+        const currentStart = range.start;
+        if (currentStart < nearestStart) nearest = block;
+      }
+    }
+  });
+
+  return nearest;
+}
+
 function syncNodeSelectionFromRawEditor({
   textarea,
   activeDoc,
@@ -130,14 +195,7 @@ function syncNodeSelectionFromRawEditor({
 
   const cursor = Math.max(0, textarea.selectionStart ?? 0);
   const line = textarea.value.slice(0, cursor).split("\n").length - 1;
-  const matched =
-    markdownBlocks.find(
-      (block) =>
-        line >= (block.lineStart ?? 0) &&
-        line < Math.max((block.lineStart ?? 0) + 1, block.lineEnd ?? (block.lineStart ?? 0) + 1)
-    ) ??
-    markdownBlocks.find((block) => (block.lineStart ?? 0) >= line) ??
-    markdownBlocks[markdownBlocks.length - 1];
+  const matched = findNearestBlockByLine(markdownBlocks, line);
 
   if (!matched) return;
   if (activeMarkdownBlockId !== matched.id) {
