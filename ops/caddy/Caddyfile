@@ -1,0 +1,6 @@
+# Replace skillfo.example.com with your real domain.
+skillfo.example.com {
+  encode gzip
+  reverse_proxy frontend:80
+}
+

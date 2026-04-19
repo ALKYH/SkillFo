@@ -81,16 +81,35 @@ function normalizeDashboard(raw = {}) {
 }
 
 function getApiBase(options = {}) {
-  const apiBase = options.apiBase ?? import.meta.env.VITE_USER_API_BASE_URL;
+  const apiBase = options.apiBase ?? import.meta.env.VITE_USER_API_BASE_URL ?? "";
   return String(apiBase ?? "").trim().replace(/\/$/, "");
 }
 
 function requireApiBase(options = {}) {
-  const base = getApiBase(options);
+  return getApiBase(options);
+}
+
+function buildApiUrl(base, path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   if (!base) {
-    throw new Error("User API base URL is not configured.");
+    return normalizedPath;
   }
-  return base;
+  return `${base}${normalizedPath}`;
+}
+
+function toNetworkAwareError(error, apiLabel = "User API") {
+  if (error?.name === "AbortError") {
+    return new Error(`${apiLabel} request timed out. Please try again.`);
+  }
+
+  const message = String(error?.message ?? "");
+  if (/failed to fetch|networkerror|load failed|fetch failed/i.test(message)) {
+    return new Error(
+      `${apiLabel} is unreachable. Check backend service status, CORS, and API base URL.`
+    );
+  }
+
+  return error instanceof Error ? error : new Error(`${apiLabel} request failed.`);
 }
 
 function createTimeoutSignal(parentSignal, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -166,13 +185,40 @@ function buildAuthHeaders(session, extra = {}) {
 
 async function parseApiError(response, fallbackMessage) {
   try {
-    const payload = await response.json();
-    const message =
-      payload?.error?.message ??
-      payload?.error ??
-      payload?.message ??
-      fallbackMessage;
-    return new Error(String(message));
+    const rawText = await response.text();
+    if (!rawText) {
+      if (response.status >= 500) {
+        return new Error(
+          "User API is temporarily unavailable. Check backend service status and logs."
+        );
+      }
+      return new Error(fallbackMessage);
+    }
+
+    try {
+      const payload = JSON.parse(rawText);
+      const message =
+        payload?.error?.message ??
+        payload?.error ??
+        payload?.message ??
+        fallbackMessage;
+      return new Error(String(message));
+    } catch {
+      const compactText = rawText.replace(/\s+/g, " ").trim();
+      if (/proxy error|could not proxy|econnrefused|connect econnrefused/i.test(compactText)) {
+        return new Error(
+          "User API is unreachable. Start backend service or check VITE_API_PROXY_TARGET."
+        );
+      }
+
+      if (response.status >= 500) {
+        return new Error(
+          "User API is temporarily unavailable. Check backend service status and logs."
+        );
+      }
+
+      return new Error(fallbackMessage);
+    }
   } catch {
     return new Error(fallbackMessage);
   }
@@ -184,7 +230,7 @@ async function loginRemote(credentials, options = {}) {
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    const response = await fetch(`${base}/api/auth/login`, {
+    const response = await fetch(buildApiUrl(base, "/api/auth/login"), {
       method: "POST",
       signal,
       headers: {
@@ -207,6 +253,40 @@ async function loginRemote(credentials, options = {}) {
       session: normalizeSession(sessionRaw),
       backend: "remote"
     };
+  } catch (error) {
+    throw toNetworkAwareError(error);
+  } finally {
+    dispose();
+  }
+}
+
+async function registerRemote(payload, options = {}) {
+  const base = requireApiBase(options);
+  const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
+
+  try {
+    const response = await fetch(buildApiUrl(base, "/api/auth/register"), {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw await parseApiError(response, `User API ${response.status}`);
+    }
+
+    const data = await response.json();
+    return {
+      user: normalizeUser(data.user ?? data.data?.user ?? data),
+      session: normalizeSession(data.session ?? data.tokens ?? data),
+      backend: "remote"
+    };
+  } catch (error) {
+    throw toNetworkAwareError(error);
   } finally {
     dispose();
   }
@@ -221,7 +301,7 @@ async function fetchCurrentUserRemote(session, options = {}) {
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    const response = await fetch(`${base}/api/users/me`, {
+    const response = await fetch(buildApiUrl(base, "/api/users/me"), {
       signal,
       headers: buildAuthHeaders(session)
     });
@@ -235,6 +315,8 @@ async function fetchCurrentUserRemote(session, options = {}) {
       user: normalizeUser(payload.user ?? payload.data ?? payload),
       backend: "remote"
     };
+  } catch (error) {
+    throw toNetworkAwareError(error);
   } finally {
     dispose();
   }
@@ -249,7 +331,7 @@ async function fetchUserHomeRemote(session, options = {}) {
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    const response = await fetch(`${base}/api/users/me/home`, {
+    const response = await fetch(buildApiUrl(base, "/api/users/me/home"), {
       signal,
       headers: buildAuthHeaders(session)
     });
@@ -263,6 +345,8 @@ async function fetchUserHomeRemote(session, options = {}) {
       dashboard: normalizeDashboard(payload.dashboard ?? payload.data ?? payload),
       backend: "remote"
     };
+  } catch (error) {
+    throw toNetworkAwareError(error);
   } finally {
     dispose();
   }
@@ -277,7 +361,7 @@ async function updateProfileRemote(patch, session, options = {}) {
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    const response = await fetch(`${base}/api/users/me`, {
+    const response = await fetch(buildApiUrl(base, "/api/users/me"), {
       method: "PATCH",
       signal,
       headers: buildAuthHeaders(session, {
@@ -295,6 +379,8 @@ async function updateProfileRemote(patch, session, options = {}) {
       user: normalizeUser(payload.user ?? payload.data ?? payload),
       backend: "remote"
     };
+  } catch (error) {
+    throw toNetworkAwareError(error);
   } finally {
     dispose();
   }
@@ -309,7 +395,7 @@ async function updatePreferencesRemote(patch, session, options = {}) {
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    const response = await fetch(`${base}/api/users/me/preferences`, {
+    const response = await fetch(buildApiUrl(base, "/api/users/me/preferences"), {
       method: "PATCH",
       signal,
       headers: buildAuthHeaders(session, {
@@ -327,6 +413,8 @@ async function updatePreferencesRemote(patch, session, options = {}) {
       preferences: normalizePreferences(payload.preferences ?? payload.data ?? payload),
       backend: "remote"
     };
+  } catch (error) {
+    throw toNetworkAwareError(error);
   } finally {
     dispose();
   }
@@ -334,6 +422,10 @@ async function updatePreferencesRemote(patch, session, options = {}) {
 
 export async function loginUser(credentials, options = {}) {
   return loginRemote(credentials, options);
+}
+
+export async function registerUser(payload, options = {}) {
+  return registerRemote(payload, options);
 }
 
 export async function fetchCurrentUser(session, options = {}) {
@@ -370,14 +462,14 @@ export async function updateUserPreferences(patch, session, options = {}) {
 
 export async function logoutUser(session, options = {}) {
   const base = getApiBase(options);
-  if (!base || !session?.accessToken) {
+  if (!session?.accessToken) {
     return { ok: true, backend: "remote" };
   }
 
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    const response = await fetch(`${base}/api/auth/logout`, {
+    const response = await fetch(buildApiUrl(base, "/api/auth/logout"), {
       method: "POST",
       signal,
       headers: buildAuthHeaders(session)
@@ -389,8 +481,9 @@ export async function logoutUser(session, options = {}) {
     }
     return { ok: true, backend: "remote" };
   } catch (error) {
-    if (error.name === "AbortError") throw error;
-    return { ok: false, backend: "remote", error: error.message ?? "Logout failed." };
+    if (error?.name === "AbortError") throw error;
+    const normalized = toNetworkAwareError(error);
+    return { ok: false, backend: "remote", error: normalized.message ?? "Logout failed." };
   } finally {
     dispose();
   }

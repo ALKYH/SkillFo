@@ -6,16 +6,20 @@ function toPositiveInt(value, fallback) {
 }
 
 function getApiBase(options = {}) {
-  const apiBase = options.apiBase ?? import.meta.env.VITE_USER_API_BASE_URL;
+  const apiBase = options.apiBase ?? import.meta.env.VITE_USER_API_BASE_URL ?? "";
   return String(apiBase ?? "").trim().replace(/\/$/, "");
 }
 
 function requireApiBase(options = {}) {
-  const base = getApiBase(options);
+  return getApiBase(options);
+}
+
+function buildApiUrl(base, path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   if (!base) {
-    throw new Error("User API base URL is not configured.");
+    return normalizedPath;
   }
-  return base;
+  return `${base}${normalizedPath}`;
 }
 
 function createTimeoutSignal(parentSignal, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -98,7 +102,8 @@ export async function fetchWorkspaceInspectorFiles(session, options = {}) {
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
 
   try {
-    const response = await fetch(`${base}/api/workspaces?${query.toString()}`, {
+    const url = `${buildApiUrl(base, "/api/workspaces")}?${query.toString()}`;
+    const response = await fetch(url, {
       signal,
       headers: {
         Accept: "application/json",

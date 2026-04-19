@@ -193,6 +193,19 @@ function createTimeoutSignal(parentSignal, timeoutMs = DEFAULT_TIMEOUT_MS) {
   };
 }
 
+function getApiBase(options = {}) {
+  const apiBase = options.apiBase ?? import.meta.env.VITE_FORGE_API_BASE_URL ?? "";
+  return String(apiBase ?? "").trim().replace(/\/$/, "");
+}
+
+function buildApiUrl(base, path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  if (!base) {
+    return normalizedPath;
+  }
+  return `${base}${normalizedPath}`;
+}
+
 async function parseApiError(response, fallbackMessage) {
   try {
     const payload = await response.json();
@@ -208,15 +221,11 @@ async function parseApiError(response, fallbackMessage) {
 }
 
 async function fetchRemoteListings(params, options = {}) {
-  const apiBase = options.apiBase ?? import.meta.env.VITE_FORGE_API_BASE_URL;
-  if (!apiBase) {
-    throw new Error("Forge API base URL is not configured.");
-  }
-
-  const base = apiBase.replace(/\/$/, "");
+  const base = getApiBase(options);
   const normalizedParams = normalizeParams(params);
   const query = buildQueryString(params);
-  const url = `${base}/api/forge/listings${query ? `?${query}` : ""}`;
+  const endpoint = buildApiUrl(base, "/api/forge/listings");
+  const url = `${endpoint}${query ? `?${query}` : ""}`;
   const { signal, dispose } = createTimeoutSignal(options.signal, options.timeoutMs);
   const accessToken = options?.session?.accessToken ?? options?.accessToken ?? "";
   const headers = { Accept: "application/json" };

@@ -3,15 +3,16 @@ import { useI18n } from "../i18n/I18nContext";
 import { useUser } from "../user/UserContext";
 
 function UserLoginModal({ open, onClose, onSuccess }) {
-  const { locale } = useI18n();
-  const { login, isBusy, authError } = useUser();
+  const { login, register, isBusy, authError } = useUser();
+  const [mode, setMode] = useState("login");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [localError, setLocalError] = useState("");
   const { t } = useI18n();
-
-  const isZh = locale.startsWith("zh");
-  const text = (zh, en) => (isZh ? zh : en);
 
   useEffect(() => {
     if (!open) return;
@@ -26,8 +27,13 @@ function UserLoginModal({ open, onClose, onSuccess }) {
 
   useEffect(() => {
     if (!open) {
+      setMode("login");
+      setUsername("");
+      setEmail("");
+      setDisplayName("");
       setIdentifier("");
       setPassword("");
+      setConfirmPassword("");
       setLocalError("");
     }
   }, [open]);
@@ -39,6 +45,49 @@ function UserLoginModal({ open, onClose, onSuccess }) {
   const onSubmit = async (event) => {
     event.preventDefault();
     setLocalError("");
+
+    if (mode === "register") {
+      if (!username.trim()) {
+        setLocalError(t("login.registerUsernameRequired"));
+        return;
+      }
+      if (username.trim().length < 3) {
+        setLocalError(t("login.registerUsernameTooShort"));
+        return;
+      }
+      if (!email.trim()) {
+        setLocalError(t("login.registerEmailRequired"));
+        return;
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+        setLocalError(t("login.registerEmailInvalid"));
+        return;
+      }
+      if (password.length < 6) {
+        setLocalError(t("login.registerPasswordShort"));
+        return;
+      }
+      if (password !== confirmPassword) {
+        setLocalError(t("login.registerPasswordNotMatch"));
+        return;
+      }
+
+      const result = await register({
+        username: username.trim(),
+        email: email.trim(),
+        password,
+        displayName: displayName.trim() || undefined
+      });
+
+      if (!result.ok) {
+        setLocalError(result.message || t("login.registerFail"));
+        return;
+      }
+
+      onSuccess?.(result.user);
+      onClose?.();
+      return;
+    }
 
     if (!identifier.trim()) {
       setLocalError(t("login.identifierNotTrim"));
@@ -76,7 +125,7 @@ function UserLoginModal({ open, onClose, onSuccess }) {
         <header className="auth-modal-head">
           <div>
             <p className="auth-modal-kicker">{t("login.authKicker")}</p>
-            <h2>{t("login.signIn")}</h2>
+            <h2>{mode === "register" ? t("login.registerTitle") : t("login.signIn")}</h2>
           </div>
           <button type="button" className="auth-modal-close" onClick={onClose} aria-label="Close">
             X
@@ -84,30 +133,101 @@ function UserLoginModal({ open, onClose, onSuccess }) {
         </header>
 
         <form className="auth-form" onSubmit={onSubmit}>
-          <label>
-            <span>{t("login.name")}</span>
-            <input
-              type="text"
-              value={identifier}
-              onChange={(event) => setIdentifier(event.target.value)}
-              autoComplete="username"
-              placeholder={t("login.namePlaceholder")}
-            />
-          </label>
+          <div className="auth-actions">
+            <button
+              type="button"
+              className={`auth-btn${mode === "login" ? " primary" : ""}`}
+              onClick={() => setMode("login")}
+              disabled={isBusy}
+            >
+              {t("login.modeLogin")}
+            </button>
+            <button
+              type="button"
+              className={`auth-btn${mode === "register" ? " primary" : ""}`}
+              onClick={() => setMode("register")}
+              disabled={isBusy}
+            >
+              {t("login.modeRegister")}
+            </button>
+          </div>
+
+          {mode === "register" && (
+            <>
+              <label>
+                <span>{t("login.registerUsername")}</span>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  autoComplete="username"
+                  placeholder={t("login.registerUsernamePlaceholder")}
+                />
+              </label>
+
+              <label>
+                <span>{t("login.registerEmail")}</span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="email"
+                  placeholder={t("login.registerEmailPlaceholder")}
+                />
+              </label>
+
+              <label>
+                <span>{t("login.registerDisplayName")}</span>
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  autoComplete="nickname"
+                  placeholder={t("login.registerDisplayNamePlaceholder")}
+                />
+              </label>
+            </>
+          )}
+
+          {mode === "login" && (
+            <label>
+              <span>{t("login.name")}</span>
+              <input
+                type="text"
+                value={identifier}
+                onChange={(event) => setIdentifier(event.target.value)}
+                autoComplete="username"
+                placeholder={t("login.namePlaceholder")}
+              />
+            </label>
+          )}
 
           <label>
-            <span>{t("login.password")}</span>
+            <span>{mode === "register" ? t("login.registerPassword") : t("login.password")}</span>
             <input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
-              placeholder={t("login.passwordPlaceholder")}
+              autoComplete={mode === "register" ? "new-password" : "current-password"}
+              placeholder={mode === "register" ? t("login.registerPasswordPlaceholder") : t("login.passwordPlaceholder")}
             />
           </label>
 
+          {mode === "register" && (
+            <label>
+              <span>{t("login.registerPasswordConfirm")}</span>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                autoComplete="new-password"
+                placeholder={t("login.registerPasswordConfirmPlaceholder")}
+              />
+            </label>
+          )}
+
           <p className="auth-hint">
-            {t("login.authHint")}
+            {mode === "register" ? t("login.registerHint") : t("login.authHint")}
           </p>
 
           {(localError || authError) && <p className="auth-error">{localError || authError}</p>}
@@ -117,7 +237,13 @@ function UserLoginModal({ open, onClose, onSuccess }) {
               {t("login.cancel")}
             </button>
             <button type="submit" className="auth-btn primary" disabled={isBusy}>
-              {isBusy ? t("login.signingIn") : t("login.signInBtn")}
+              {mode === "register"
+                ? isBusy
+                  ? t("login.registering")
+                  : t("login.registerBtn")
+                : isBusy
+                  ? t("login.signingIn")
+                  : t("login.signInBtn")}
             </button>
           </div>
         </form>

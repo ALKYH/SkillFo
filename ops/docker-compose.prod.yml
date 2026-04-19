@@ -1,0 +1,63 @@
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: skillfo-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    networks:
+      - app
+
+  frontend:
+    image: ghcr.io/your-org/skillfo-frontend:latest
+    container_name: skillfo-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - app
+
+  backend:
+    image: ghcr.io/your-org/skillfo-backend:latest
+    container_name: skillfo-backend
+    restart: unless-stopped
+    env_file:
+      - ./env/backend.prod.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: skillfo-postgres
+    restart: unless-stopped
+    env_file:
+      - ./env/postgres.prod.env
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+networks:
+  app:
+    driver: bridge
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:
+

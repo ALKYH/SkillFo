@@ -4,6 +4,7 @@ import {
   fetchCurrentUser,
   getStoredSession,
   loginUser,
+  registerUser,
   logoutUser,
   persistSession,
   updateUserPreferences,
@@ -73,6 +74,25 @@ export function UserProvider({ children }) {
       return { ok: true, user: result.user };
     } catch (error) {
       const message = error?.message || "Login failed.";
+      setAuthError(message);
+      return { ok: false, message };
+    } finally {
+      setIsBusy(false);
+    }
+  }, []);
+
+  const register = useCallback(async (payload) => {
+    setIsBusy(true);
+    setAuthError("");
+    try {
+      const result = await registerUser(payload);
+      const nextSession = persistSession(result.session);
+      setSession(nextSession);
+      setUser(result.user);
+      setBackend(result.backend ?? "remote");
+      return { ok: true, user: result.user };
+    } catch (error) {
+      const message = error?.message || "Registration failed.";
       setAuthError(message);
       return { ok: false, message };
     } finally {
@@ -153,6 +173,7 @@ export function UserProvider({ children }) {
       isBusy,
       authError,
       login,
+      register,
       logout,
       refreshUser,
       saveProfile,
@@ -164,6 +185,7 @@ export function UserProvider({ children }) {
     isBusy,
     isInitializing,
     login,
+    register,
     logout,
     refreshUser,
     savePreferences,
